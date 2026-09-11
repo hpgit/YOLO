@@ -1,0 +1,6 @@
+task: export
+format: onnx # onnx or tflite
+batch_size: 1
+dynamic_batch: false # ONNX only; spatial dimensions stay fixed
+opset: 17
+output: null # defaults to ${out_path}/export/${name}/${model.name}.${task.format}

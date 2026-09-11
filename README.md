@@ -101,6 +101,33 @@ python yolo/lazy.py task=validation
 python yolo/lazy.py task=validation dataset=toy
 ```
 
+### Export (ONNX / TFLite)
+
+```shell
+pip install -e '.[export-onnx]'
+python yolo/lazy.py task=export task.format=onnx model=v9-c weight=weights/v9-c.pt
+python yolo/lazy.py task=export task.format=onnx task.dynamic_batch=true task.output=runs/model.onnx
+
+# TFLite: use a separate Python >= 3.11 environment for the converter dependencies.
+pip install -e '.[export-tflite]'
+python yolo/lazy.py task=export task.format=tflite model=v9-c weight=weights/v9-c.pt
+```
+
+Both formats have one float32 output: `[batch_size, num_boxes, 4 + num_classes]`.
+Each row contains `[x1, y1, x2, y2, class_0_score, ...]` before NMS or confidence
+filtering. Coordinates use input-image pixels; YOLOv9 scores are sigmoid class
+probabilities, and YOLOv7 scores include objectness. Auxiliary outputs are excluded.
+Input is float32 RGB `[batch_size, 3, height, width]`, scaled to `[0, 1]`; perform
+resize/letterbox preprocessing and NMS in your application.
+
+`image_size=[640,640]` means `[width,height]` (positive multiples of 32), and
+`task.batch_size=1` sets the export batch size. At 640×640 with 80 classes,
+YOLOv9 returns `[1,8400,84]`. Spatial dimensions are fixed for both formats;
+`task.dynamic_batch=true` is ONNX-only. Files default to
+`runs/export/<name>/<model>.onnx` or `.tflite`; use `task.output` to choose a path.
+Use the same `model` and `dataset` configuration as the trained checkpoint.
+See [export details](docs/3_custom/3_task.rst) for the output contract and dependencies.
+
 ## Contributing
 
 Contributions to the YOLO project are welcome! See [CONTRIBUTING](docs/CONTRIBUTING.md) for guidelines on how to contribute.

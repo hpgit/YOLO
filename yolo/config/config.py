@@ -139,8 +139,18 @@ class TrainConfig:
 
 
 @dataclass
+class ExportConfig:
+    task: str
+    format: str
+    batch_size: int
+    dynamic_batch: bool
+    opset: int
+    output: Optional[str]
+
+
+@dataclass
 class Config:
-    task: Union[TrainConfig, InferenceConfig, ValidationConfig]
+    task: Union[TrainConfig, InferenceConfig, ValidationConfig, ExportConfig]
     dataset: DatasetConfig
     model: ModelConfig
     name: str

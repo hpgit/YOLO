@@ -14,6 +14,11 @@ from yolo.utils.logging_utils import setup
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: Config):
+    if cfg.task.task == "export":
+        from yolo.tools.export import export_model
+
+        return export_model(cfg)
+
     callbacks, loggers, save_path = setup(cfg)
 
     trainer = Trainer(
