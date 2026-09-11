@@ -47,11 +47,12 @@ class ValidateModel(BaseModel):
     def validation_step(self, batch, batch_idx):
         batch_size, images, targets, rev_tensor, img_paths = batch
         H, W = images.shape[2:]
-        predicts = self.post_process(self.ema(images), image_size=[W, H])
-        mAP = self.metric(
+        predicts = self.post_process(self.ema(images, shortcut="Main"), image_size=[W, H])
+        self.metric.update(
             [to_metrics_format(predict) for predict in predicts], [to_metrics_format(target) for target in targets]
         )
-        return predicts, mAP
+        # Batch AP is expensive and not the dataset AP; compute once at epoch end.
+        return predicts, None
 
     def on_validation_epoch_end(self):
         epoch_metrics = self.metric.compute()

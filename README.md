@@ -54,6 +54,8 @@ These are simple examples. For more customization details, please refer to [Note
 
 ## Training
 
+For a reproducible COCO 1/20 subset and training/validation speed comparisons, see the [subset performance guide (한국어)](docs/performance-coco-subset.md).
+
 To train YOLO on your machine/dataset:
 
 1. Modify the configuration file `yolo/config/dataset/**.yaml` to point to your dataset.

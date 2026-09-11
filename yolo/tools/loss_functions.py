@@ -32,7 +32,7 @@ class BoxLoss(nn.Module):
         picked_predict = predicts_bbox[valid_bbox].view(-1, 4)
         picked_targets = targets_bbox[valid_bbox].view(-1, 4)
 
-        iou = calculate_iou(picked_predict, picked_targets, "ciou").diag()
+        iou = calculate_iou(picked_predict, picked_targets, "ciou", aligned=True)
         loss_iou = 1.0 - iou
         loss_iou = (loss_iou * box_norm).sum() / cls_norm
         return loss_iou
@@ -93,7 +93,7 @@ class YOLOLoss:
         targets_cls, targets_bbox = self.separate_anchor(align_targets)
         predicts_box = predicts_box / self.vec2box.scaler[None, :, None]
 
-        cls_norm = max(targets_cls.sum(), 1)
+        cls_norm = targets_cls.sum().clamp_min(1)
         box_norm = targets_cls.sum(-1)[valid_masks]
 
         ## -- CLS -- ##
@@ -119,7 +119,7 @@ class DualLoss:
 
     def __call__(
         self, aux_predicts: List[Tensor], main_predicts: List[Tensor], targets: Tensor
-    ) -> Tuple[Tensor, Dict[str, float]]:
+    ) -> Tuple[Tensor, Dict[str, Tensor]]:
         # TODO: Need Refactor this region, make it flexible!
         aux_iou, aux_dfl, aux_cls = self.loss(aux_predicts, targets)
         main_iou, main_dfl, main_cls = self.loss(main_predicts, targets)
@@ -129,9 +129,7 @@ class DualLoss:
             self.dfl_rate * (aux_dfl * self.aux_rate + main_dfl),
             self.cls_rate * (aux_cls * self.aux_rate + main_cls),
         ]
-        loss_dict = {
-            f"Loss/{name}Loss": value.detach().item() for name, value in zip(["Box", "DFL", "BCE"], total_loss)
-        }
+        loss_dict = {f"Loss/{name}Loss": value.detach() for name, value in zip(["Box", "DFL", "BCE"], total_loss)}
         return sum(total_loss), loss_dict
 
 

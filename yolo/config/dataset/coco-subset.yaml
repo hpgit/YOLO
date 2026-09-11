@@ -1,0 +1,7 @@
+# Generate once with scripts/prepare_coco_subset.py.
+defaults:
+  - coco
+  - _self_
+
+path: data/coco-1over20
+auto_download: null

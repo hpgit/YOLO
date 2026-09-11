@@ -12,20 +12,24 @@ from yolo.model.yolo import YOLO
 from yolo.utils.logger import logger
 
 
-def calculate_iou(bbox1, bbox2, metrics="iou") -> Tensor:
+def calculate_iou(bbox1, bbox2, metrics="iou", aligned=False) -> Tensor:
     metrics = metrics.lower()
     EPS = 1e-7
     dtype = bbox1.dtype
     bbox1 = bbox1.to(torch.float32)
     bbox2 = bbox2.to(torch.float32)
 
-    # Expand dimensions if necessary
-    if bbox1.ndim == 2 and bbox2.ndim == 2:
-        bbox1 = bbox1.unsqueeze(1)  # (Ax4) -> (Ax1x4)
-        bbox2 = bbox2.unsqueeze(0)  # (Bx4) -> (1xBx4)
-    elif bbox1.ndim == 3 and bbox2.ndim == 3:
-        bbox1 = bbox1.unsqueeze(2)  # (BZxAx4) -> (BZxAx1x4)
-        bbox2 = bbox2.unsqueeze(1)  # (BZxBx4) -> (BZx1xBx4)
+    if aligned:
+        if bbox1.shape != bbox2.shape:
+            raise ValueError("Aligned IoU requires bounding boxes with the same shape")
+    else:
+        # Expand dimensions if necessary
+        if bbox1.ndim == 2 and bbox2.ndim == 2:
+            bbox1 = bbox1.unsqueeze(1)  # (Ax4) -> (Ax1x4)
+            bbox2 = bbox2.unsqueeze(0)  # (Bx4) -> (1xBx4)
+        elif bbox1.ndim == 3 and bbox2.ndim == 3:
+            bbox1 = bbox1.unsqueeze(2)  # (BZxAx4) -> (BZxAx1x4)
+            bbox2 = bbox2.unsqueeze(1)  # (BZxBx4) -> (BZx1xBx4)
 
     # Calculate intersection coordinates
     xmin_inter = torch.max(bbox1[..., 0], bbox2[..., 0])

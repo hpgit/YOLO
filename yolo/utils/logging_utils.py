@@ -125,9 +125,10 @@ class YOLORichProgressBar(RichProgressBar):
             self._update(self.val_sanity_progress_bar_id, batch_idx + 1)
         elif self.val_progress_bar_id is not None:
             self._update(self.val_progress_bar_id, batch_idx + 1)
-            _, mAP = outputs
-            mAP_desc = f" mAP :{mAP['map']*100:6.2f} | mAP50 :{mAP['map_50']*100:6.2f} |"
-            self.progress.update(self.val_progress_bar_id, description=f"[green]Valid [white]|{mAP_desc}")
+            self.progress.update(
+                self.val_progress_bar_id,
+                description=f"[green]Valid [white]| {batch_idx + 1} batches | AP at epoch end",
+            )
         self.refresh()
 
     @override
