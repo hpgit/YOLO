@@ -36,6 +36,11 @@ class ValidateModel(BaseModel):
         self.ema = self.model
 
     def setup(self, stage):
+        # COCO evaluation reads scores one scalar at a time. Keeping states on
+        # CPU avoids thousands of tiny CUDA copies. NCCL/DDP still needs GPU
+        # states for TorchMetrics synchronization, so retain that path there.
+        if self._trainer is not None:
+            self.metric.compute_on_cpu = self.trainer.world_size == 1
         self.vec2box = create_converter(
             self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
         )

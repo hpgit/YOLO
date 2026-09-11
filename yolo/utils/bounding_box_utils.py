@@ -5,11 +5,11 @@ import torch
 from einops import rearrange
 from torch import Tensor, tensor
 from torchmetrics.detection import MeanAveragePrecision
-from torchvision.ops import batched_nms
 
 from yolo.config.config import AnchorConfig, MatcherConfig, NMSConfig
 from yolo.model.yolo import YOLO
 from yolo.utils.logger import logger
+from yolo.utils.nms_utils import grouped_batched_nms as batched_nms
 
 
 def calculate_iou(bbox1, bbox2, metrics="iou", aligned=False) -> Tensor:

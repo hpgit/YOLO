@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -60,3 +61,14 @@ def test_validation_step_updates_without_computing():
     module.metric.assert_not_called()
     module.metric.compute.assert_not_called()
     assert module.ema.call_args.kwargs == {"shortcut": "Main"}
+
+
+@pytest.mark.parametrize("world_size,expected", [(1, True), (2, False)])
+def test_metric_cpu_storage_is_disabled_for_distributed_validation(world_size, expected):
+    trainer = SimpleNamespace(world_size=world_size)
+    module = SimpleNamespace(_trainer=trainer, trainer=trainer, metric=SimpleNamespace(compute_on_cpu=False),
+        cfg=SimpleNamespace(model=SimpleNamespace(name="v9-t", anchor=None), image_size=[64, 64]),
+        model=None, device=torch.device("cpu"), validation_cfg=SimpleNamespace(nms=None))
+    with patch("yolo.tools.solver.create_converter"), patch("yolo.tools.solver.PostProcess"):
+        ValidateModel.setup(module, "validate")
+    assert module.metric.compute_on_cpu is expected

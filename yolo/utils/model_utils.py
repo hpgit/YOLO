@@ -22,6 +22,7 @@ from yolo.config.config import (
 )
 from yolo.model.yolo import YOLO
 from yolo.utils.bounding_box_utils import Anc2Box, Vec2Box, bbox_nms, transform_bbox
+from yolo.utils.ema_utils import foreach_ema_update
 from yolo.utils.logger import logger
 
 
@@ -72,8 +73,7 @@ class EMA(Callback):
             return
         self.step += 1
         decay_factor = self.decay * (1 - exp(-self.step / self.tau))
-        for key, param in pl_module.model.state_dict().items():
-            self.ema_state_dict[key] = lerp(param.detach(), self.ema_state_dict[key], decay_factor)
+        foreach_ema_update(pl_module.model.state_dict(), self.ema_state_dict, decay_factor)
 
 
 class GradientAccumulation(Callback):
