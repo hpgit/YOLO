@@ -40,6 +40,15 @@ thresholding, top-k selection, coordinate clipping, inverse letterbox transform,
 or auxiliary prediction output is included. Classification and segmentation
 models are not supported by this detection export task.
 
+Export replaces DFL's 5-D Conv3d calculation in a copy of the model with an
+equivalent 4-D Conv2d calculation. Spatial dimensions are flattened before
+softmax, and the checkpoint's projection weights are preserved. Training,
+ordinary inference, and checkpoint formats are unchanged. Internal ONNX tensors,
+including intermediate results, constants, and weights, must have rank at most 4.
+Export infers and saves internal shapes and rejects unknown ranks or ranks above 4;
+this also applies when the batch dimension is dynamic. Re-export older files to
+apply this change.
+
 The default path is ``${out_path}/export/${name}/${model.name}.${task.format}``.
 Set ``task.output=path/model.onnx`` or ``task.output=path/model.tflite`` to override
 it, and ``exist_ok=false`` to prevent overwriting. ONNX graph inputs and outputs

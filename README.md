@@ -117,6 +117,8 @@ Both formats have one float32 output: `[batch_size, num_boxes, 4 + num_classes]`
 Each row contains `[x1, y1, x2, y2, class_0_score, ...]` before NMS or confidence
 filtering. Coordinates use input-image pixels; YOLOv9 scores are sigmoid class
 probabilities, and YOLOv7 scores include objectness. Auxiliary outputs are excluded.
+Export uses rank-4 DFL decoding; internal ONNX tensors, constants, and weights
+are checked to have at most four dimensions. Training and checkpoint formats are unchanged.
 Input is float32 RGB `[batch_size, 3, height, width]`, scaled to `[0, 1]`; perform
 resize/letterbox preprocessing and NMS in your application.
 

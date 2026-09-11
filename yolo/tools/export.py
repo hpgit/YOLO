@@ -7,10 +7,29 @@ import torch
 from torch import nn
 
 from yolo.config.config import Config
-from yolo.model.module import MultiheadDetection
+from yolo.model.module import Anchor2Vec, MultiheadDetection
 from yolo.model.yolo import create_model
 from yolo.utils.bounding_box_utils import Anc2Box, create_converter
 from yolo.utils.logger import logger
+
+
+class ExportAnchor2Vec(nn.Module):
+    """DFL expectation with rank-4 intermediates and the checkpoint's projection."""
+
+    def __init__(self, source: Anchor2Vec):
+        super().__init__()
+        self.reg_max = source.anc2vec.in_channels
+        self.projection = nn.Conv2d(self.reg_max, 1, 1, bias=False)
+        self.projection.weight = nn.Parameter(
+            source.anc2vec.weight.detach().clone().reshape(1, self.reg_max, 1, 1), requires_grad=False
+        )
+
+    def forward(self, anchor_x):
+        batch, _, height, width = anchor_x.shape
+        logits = anchor_x.reshape(batch, 4, self.reg_max, height * width).transpose(1, 2)
+        vector = self.projection(logits.softmax(dim=1)).reshape(batch, 4, height, width)
+        # Export only consumes vector; keep the unused logits rank-4 as well.
+        return logits, vector
 
 
 class ExportModel(nn.Module):
@@ -22,20 +41,24 @@ class ExportModel(nn.Module):
 
     def __init__(self, model, anchor_cfg, image_size, model_name):
         super().__init__()
-        self.model = model.cpu().float().eval()
-        main = next((layer for layer in model.model if layer.tags == "Main" and layer.output), None)
+        self.model = deepcopy(model).cpu().float().eval()
+        main = next((layer for layer in self.model.model if layer.tags == "Main" and layer.output), None)
         if type(main) is not MultiheadDetection:
             raise ValueError("Export requires a detection model with a Main MultiheadDetection output.")
+        for module in list(self.model.modules()):
+            for name, child in list(module.named_children()):
+                if isinstance(child, Anchor2Vec):
+                    setattr(module, name, ExportAnchor2Vec(child))
         with torch.no_grad():
-            converter = create_converter(model_name, model, anchor_cfg, image_size, torch.device("cpu"))
+            converter = create_converter(model_name, self.model, anchor_cfg, image_size, torch.device("cpu"))
         self.anchor_based = isinstance(converter, Anc2Box)
         self.class_num = model.num_classes
         if self.anchor_based:
             self.anchor_num = converter.anchor_num
             self.strides = tuple(converter.strides)
-            self.register_buffer("anchor_scale", converter.anchor_scale.reshape(-1, 1, self.anchor_num, 1, 2))
             for index, grid in enumerate(converter.anchor_grids):
                 self.register_buffer(f"grid_{index}", grid.reshape(1, 1, -1, 2))
+                self.register_buffer(f"scale_{index}", converter.anchor_scale[index].reshape(1, self.anchor_num, 1, 2))
         else:
             self.register_buffer("anchor_grid", converter.anchor_grid)
             self.register_buffer("scaler", converter.scaler.view(1, -1, 1))
@@ -50,7 +73,7 @@ class ExportModel(nn.Module):
                 prediction = prediction.reshape(batch, self.anchor_num, 5 + self.class_num, height * width)
                 prediction = prediction.permute(0, 1, 3, 2).sigmoid()
                 center = (prediction[..., :2] * 2 - 0.5 + getattr(self, f"grid_{index}")) * self.strides[index]
-                size = (prediction[..., 2:4] * 2).square() * self.anchor_scale[index]
+                size = (prediction[..., 2:4] * 2).square() * getattr(self, f"scale_{index}")
                 boxes = torch.cat((center - size / 2, center + size / 2), dim=-1)
                 scores = prediction[..., 5:] * prediction[..., 4:5]
                 outputs.append(torch.cat((boxes, scores), dim=-1).reshape(batch, -1, 4 + self.class_num))
@@ -61,6 +84,46 @@ class ExportModel(nn.Module):
         left_top, right_bottom = distances.chunk(2, dim=-1)
         boxes = torch.cat((self.anchor_grid - left_top, self.anchor_grid + right_bottom), dim=-1)
         return torch.cat((boxes, scores), dim=-1)
+
+
+def validate_onnx_tensor_ranks(model):
+    """Infer all tensor ranks and reject unknown or >4 ranks, including constants."""
+    import onnx
+
+    model = onnx.shape_inference.infer_shapes(model, strict_mode=True, data_prop=True)
+
+    def check_tensor(tensor):
+        if len(tensor.dims) > 4:
+            raise ValueError(f"ONNX tensor {tensor.name!r} has rank {len(tensor.dims)}; maximum is 4.")
+
+    def check_graph(graph):
+        values = {v.name: v for v in [*graph.input, *graph.value_info, *graph.output]}
+        for value in values.values():
+            tensor_type = value.type.tensor_type
+            if not tensor_type.HasField("shape"):
+                raise ValueError(f"Cannot verify ONNX tensor rank: {value.name!r}.")
+            if len(tensor_type.shape.dim) > 4:
+                raise ValueError(f"ONNX tensor {value.name!r} has rank {len(tensor_type.shape.dim)}; maximum is 4.")
+        for tensor in graph.initializer:
+            check_tensor(tensor)
+        for node in graph.node:
+            for name in node.output:
+                if name and name not in values:
+                    raise ValueError(f"Cannot verify ONNX tensor rank: {name!r}.")
+            for attribute in node.attribute:
+                if attribute.type == onnx.AttributeProto.TENSOR:
+                    check_tensor(attribute.t)
+                elif attribute.type == onnx.AttributeProto.TENSORS:
+                    for tensor in attribute.tensors:
+                        check_tensor(tensor)
+                elif attribute.type == onnx.AttributeProto.GRAPH:
+                    check_graph(attribute.g)
+                elif attribute.type == onnx.AttributeProto.GRAPHS:
+                    for subgraph in attribute.graphs:
+                        check_graph(subgraph)
+
+    check_graph(model.graph)
+    return model
 
 
 def export_model(cfg: Config) -> Path:
@@ -117,7 +180,9 @@ def export_model(cfg: Config) -> Path:
             dynamic_axes=dynamic_axes,
             dynamo=False,
         )
-        onnx.checker.check_model(str(output))
+        exported = validate_onnx_tensor_ranks(onnx.load(str(output)))
+        onnx.checker.check_model(exported)
+        onnx.save(exported, str(output))
     else:
         edge_model = litert_torch.convert(wrapper, (sample,))
         edge_model.export(str(output))
