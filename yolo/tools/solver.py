@@ -1,4 +1,4 @@
-from math import ceil
+from math import isfinite
 from pathlib import Path
 
 from lightning import LightningModule
@@ -113,6 +113,8 @@ class TrainModel(ValidateModel):
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         self.cfg = cfg
+        self.automatic_optimization = False
+        self._last_opt_step = -1
         self.train_loader = create_dataloader(self.cfg.task.data, self.cfg.dataset, self.cfg.task.task)
 
     def setup(self, stage):
@@ -123,10 +125,48 @@ class TrainModel(ValidateModel):
         return self.train_loader
 
     def on_train_epoch_start(self):
-        self.trainer.optimizers[0].next_epoch(
-            ceil(len(self.train_loader) / self.trainer.world_size), self.current_epoch
-        )
+        batches = self.trainer.num_training_batches
+        if not isfinite(batches) or batches <= 0:
+            raise ValueError("Training requires a finite, nonempty number of batches.")
+        self._batches_per_epoch = int(batches)
+        if not hasattr(self, "_last_opt_step"):
+            self._last_opt_step = -1
+        self.trainer.optimizers[0].next_epoch(self._batches_per_epoch, self.current_epoch)
+        # The reference discards an incomplete accumulation at the epoch boundary,
+        # while preserving the absolute iteration of the preceding optimizer step.
+        self.optimizers().zero_grad(set_to_none=True)
         self.vec2box.update(self.cfg.image_size)
+
+    def accumulation_at(self, iteration):
+        data = self.cfg.task.data
+        global_batch = data.batch_size * self.trainer.world_size
+        nominal_batch = getattr(data, "equivalent_batch_size", global_batch)
+        ratio = nominal_batch / global_batch
+        warmup = self.cfg.task.scheduler.warmup
+        warmup_batches = max(round(warmup.epochs * self._batches_per_epoch),
+                             getattr(warmup, "min_iterations", 100))
+        if warmup_batches and iteration <= warmup_batches:
+            return max(1, round(1 + (ratio - 1) * iteration / warmup_batches))
+        return max(1, round(ratio))
+
+    def on_before_optimizer_step(self, optimizer):
+        # Lightning invokes this hook after GradScaler unscales gradients.
+        self.clip_gradients(
+            optimizer,
+            gradient_clip_val=getattr(self.cfg.task, "gradient_clip_val", 10.0),
+            gradient_clip_algorithm=getattr(self.cfg.task, "gradient_clip_algorithm", "norm"),
+        )
+
+    def on_train_epoch_end(self):
+        scheduler = self.lr_schedulers()
+        if scheduler is not None:
+            scheduler.step()
+
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint["training_accumulation"] = {"last_opt_step": self._last_opt_step}
+
+    def on_load_checkpoint(self, checkpoint):
+        self._last_opt_step = checkpoint.get("training_accumulation", {}).get("last_opt_step", -1)
 
     def training_step(self, batch, batch_idx):
         lr_dict = self.trainer.optimizers[0].next_batch()
@@ -143,7 +183,16 @@ class TrainModel(ValidateModel):
             rank_zero_only=True,
         )
         self.log_dict(lr_dict, prog_bar=False, logger=True, on_epoch=False, rank_zero_only=True)
-        return loss * batch_size
+        batch_loss = loss * batch_size
+        # DDP averages gradients across ranks; restore the reference global sum.
+        self.manual_backward(batch_loss * self.trainer.world_size)
+        iteration = self.current_epoch * self._batches_per_epoch + batch_idx
+        if iteration - self._last_opt_step >= self.accumulation_at(iteration):
+            optimizer = self.optimizers()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            self._last_opt_step = iteration
+        return batch_loss.detach()
 
     def configure_optimizers(self):
         optimizer = create_optimizer(self.model, self.cfg.task.optimizer)

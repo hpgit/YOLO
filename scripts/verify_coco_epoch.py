@@ -69,11 +69,12 @@ def main():
     model = TrainModel(cfg)
     audit = Audit(args.output)
     checkpoint = ModelCheckpoint(dirpath=args.output / "checkpoints", filename="epoch-{epoch:02d}", save_last=True)
+    ema = EMA(cfg.task.ema.decay)
     trainer = Trainer(
         accelerator="gpu", devices=1, max_epochs=1, precision="16-mixed",
-        callbacks=[GradientAccumulation(cfg.task.data, cfg.task.scheduler), EMA(cfg.task.ema.decay), audit, checkpoint],
+        callbacks=[GradientAccumulation(cfg.task.data, cfg.task.scheduler), ema, audit, checkpoint],
         logger=CSVLogger(str(args.output), name="metrics"),
-        log_every_n_steps=1 if args.smoke else 50, gradient_clip_val=10, gradient_clip_algorithm="norm",
+        log_every_n_steps=1 if args.smoke else 50,
         deterministic=True, enable_progress_bar=False, enable_model_summary=False,
         default_root_dir=args.output,
         **({"limit_train_batches": 20, "limit_val_batches": 2} if args.smoke else {}),
@@ -96,6 +97,8 @@ def main():
         "peak_cuda_memory_allocated_bytes": torch.cuda.max_memory_allocated(),
         "train_batches": audit.batches, "validation_images": audit.validation_images,
         "completed_epochs": trainer.current_epoch, "optimizer_steps": trainer.global_step,
+        "optimizer_step_attempts": trainer.global_step, "successful_optimizer_steps": ema.step,
+        "amp_skipped_steps": trainer.global_step - ema.step,
         "finite_losses": True, "weights_changed": changed,
         "first_loss": audit.losses[0], "last_loss": audit.losses[-1],
         "elapsed_seconds": time.monotonic() - audit.started,

@@ -77,7 +77,6 @@ def solver(train_cfg: Config) -> Trainer:
         callbacks=callbacks,
         logger=loggers,
         log_every_n_steps=1,
-        gradient_clip_val=10,
         deterministic=True,
         default_root_dir=save_path,
     )

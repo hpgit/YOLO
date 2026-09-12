@@ -90,7 +90,6 @@ def main():
         ema = EMA()
         ema.ema_state_dict = {key: value.detach().clone() for key, value in model.state_dict().items()}
         from types import SimpleNamespace
-        trainer = SimpleNamespace(accumulate_grad_batches=1)
         module = SimpleNamespace(model=model)
         train = defaultdict(float)
         iterator = iter(train_loader)
@@ -111,8 +110,14 @@ def main():
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
                 scaler.step(optimizer)
                 scaler.update()
+            scale_before = scaler.get_scale()
             timed(current, "optimizer", update)
-            timed(current, "ema", lambda: ema.on_train_batch_end(trainer, module))
+            if hasattr(ema, "update"):
+                # GradScaler leaves parameters unchanged when it skips an overflow.
+                if scaler.get_scale() >= scale_before:
+                    timed(current, "ema", lambda: ema.update(module))
+            else:
+                timed(current, "ema", lambda: ema.on_train_batch_end(SimpleNamespace(accumulate_grad_batches=1), module))
         result["train_batches_after_warmup"] = args.train_batches
         result["training_stage_seconds"] = dict(train)
         result["training_stage_ms_per_batch"] = {key: value / args.train_batches * 1000 for key, value in train.items()}

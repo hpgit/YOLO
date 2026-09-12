@@ -4,6 +4,8 @@ defaults:
   - validation: ../validation
 
 epoch: 500
+gradient_clip_val: 10.0
+gradient_clip_algorithm: norm
 
 data:
   batch_size: 16
@@ -45,6 +47,7 @@ scheduler:
   type: LinearLR
   warmup:
     epochs: 3.0
+    min_iterations: 100
   args:
     total_iters: ${task.epoch}
     start_factor: 1

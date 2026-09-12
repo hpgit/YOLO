@@ -6,7 +6,6 @@ from typing import List, Optional, Type, Union
 
 import torch
 import torch.distributed as dist
-from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
 from omegaconf import ListConfig
 from torch import Tensor, no_grad
@@ -45,66 +44,97 @@ def lerp(start: float, end: float, step: Union[int, float], total: int = 1):
 
 
 class EMA(Callback):
+    """Maintain EMA on successful optimizer updates, including under AMP."""
+
     def __init__(self, decay: float = 0.9999, tau: float = 2000):
         super().__init__()
         logger.info(":chart_with_upwards_trend: Enable Model EMA")
         self.decay = decay
         self.tau = tau
         self.step = 0
-        self.batch_step_counter = 0
         self.ema_state_dict = None
+        self._step_handles = []
 
     def setup(self, trainer, pl_module, stage):
-        pl_module.ema = deepcopy(pl_module.model)
-        self.tau /= trainer.world_size
-        for param in pl_module.ema.parameters():
-            param.requires_grad = False
+        pl_module.ema = deepcopy(pl_module.model).eval()
+        pl_module.ema.requires_grad_(False)
 
-    def on_validation_start(self, trainer: "Trainer", pl_module: "LightningModule"):
-        self.batch_step_counter = 0
+    def _initialize(self, pl_module):
         if self.ema_state_dict is None:
             self.ema_state_dict = deepcopy(pl_module.model.state_dict())
+        else:
+            # Callback checkpoint states can be loaded on CPU before strategy setup.
+            current = pl_module.model.state_dict()
+            self.ema_state_dict = {
+                key: value.to(current[key]) for key, value in self.ema_state_dict.items()
+            }
+
+    def on_train_start(self, trainer, pl_module):
+        self._initialize(pl_module)
+        for optimizer in trainer.optimizers:
+            # An optimizer subclass calling super().step() can trigger PyTorch's
+            # hooks twice. Count only the completed outermost optimizer call.
+            depth = [0]
+
+            def before_step(optimizer, args, kwargs, depth=depth):
+                depth[0] += 1
+
+            def after_step(optimizer, args, kwargs, depth=depth):
+                depth[0] -= 1
+                if depth[0] == 0:
+                    self._after_optimizer_step(optimizer, pl_module)
+
+            self._step_handles.append(optimizer.register_step_pre_hook(before_step))
+            self._step_handles.append(optimizer.register_step_post_hook(after_step))
+
+    def _after_optimizer_step(self, optimizer, pl_module):
+        # Fused optimizers may execute step() but skip internally on overflow.
+        found_inf = getattr(optimizer, "found_inf", None)
+        if found_inf is None or not bool(found_inf):
+            self.update(pl_module)
+
+    def on_validation_start(self, trainer, pl_module):
+        self._initialize(pl_module)
         pl_module.ema.load_state_dict(self.ema_state_dict)
+        pl_module.ema.eval()
 
     @no_grad()
-    def on_train_batch_end(self, trainer: "Trainer", pl_module: "LightningModule", *args, **kwargs) -> None:
-        self.batch_step_counter += 1
-        if self.batch_step_counter % trainer.accumulate_grad_batches:
-            return
+    def update(self, pl_module):
+        self._initialize(pl_module)
         self.step += 1
         decay_factor = self.decay * (1 - exp(-self.step / self.tau))
-        foreach_ema_update(pl_module.model.state_dict(), self.ema_state_dict, decay_factor)
+        source = pl_module.model.state_dict()
+        # Match the reference: integer counters are not exponentially averaged.
+        floating = {key: value for key, value in self.ema_state_dict.items() if value.is_floating_point()}
+        foreach_ema_update({key: source[key] for key in floating}, floating, decay_factor)
+        self.ema_state_dict.update(floating)
+
+    def teardown(self, trainer, pl_module, stage):
+        for handle in self._step_handles:
+            handle.remove()
+        self._step_handles.clear()
+
+    def state_dict(self):
+        return {"step": self.step, "ema_state_dict": self.ema_state_dict}
+
+    def load_state_dict(self, state_dict):
+        self.step = state_dict["step"]
+        self.ema_state_dict = state_dict["ema_state_dict"]
 
 
 class GradientAccumulation(Callback):
+    """Compatibility marker; TrainModel owns its manual accumulation schedule.
+
+    Lightning's automatic accumulation divides the loss and forces an epoch-tail
+    update. Neither operation matches the reference detector training loop.
+    """
+
     def __init__(self, data_cfg: DataConfig, scheduler_cfg: SchedulerConfig):
         super().__init__()
-        self.equivalent_batch_size = data_cfg.equivalent_batch_size
-        self.actual_batch_size = data_cfg.batch_size
-        self.warmup_epochs = getattr(scheduler_cfg.warmup, "epochs", 0)
-        self.current_batch = 0
-        self.max_accumulation = 1
-        self.warmup_batches = 0
-        logger.info(":arrows_counterclockwise: Enable Gradient Accumulation")
 
-    def setup(self, trainer: "Trainer", pl_module: "LightningModule", stage: str) -> None:
-        effective_batch_size = self.actual_batch_size * trainer.world_size
-        self.max_accumulation = max(1, round(self.equivalent_batch_size / effective_batch_size))
-        batches_per_epoch = int(len(pl_module.train_loader) / trainer.world_size)
-        self.warmup_batches = int(self.warmup_epochs * batches_per_epoch)
-
-    def on_train_epoch_start(self, trainer: "Trainer", pl_module: "LightningModule") -> None:
-        self.current_batch = trainer.global_step
-
-    def on_train_batch_start(self, trainer: "Trainer", pl_module: "LightningModule", *args, **kwargs) -> None:
-        if self.current_batch < self.warmup_batches:
-            current_accumulation = round(lerp(1, self.max_accumulation, self.current_batch, self.warmup_batches))
-        else:
-            current_accumulation = self.max_accumulation
-        trainer.accumulate_grad_batches = current_accumulation
-
-    def on_train_batch_end(self, trainer: "Trainer", pl_module: "LightningModule", *args, **kwargs) -> None:
-        self.current_batch += 1
+    def setup(self, trainer, pl_module, stage):
+        if stage == "fit" and pl_module.automatic_optimization:
+            raise ValueError("GradientAccumulation requires TrainModel manual optimization.")
 
 
 def create_optimizer(model: YOLO, optim_cfg: OptimizerConfig) -> Optimizer:

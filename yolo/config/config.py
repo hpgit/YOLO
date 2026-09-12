@@ -138,6 +138,8 @@ class TrainConfig:
     scheduler: SchedulerConfig
     ema: EMAConfig
     validation: ValidationConfig
+    gradient_clip_val: float = 10.0
+    gradient_clip_algorithm: str = "norm"
 
 
 @dataclass

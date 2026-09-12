@@ -115,7 +115,9 @@ def main():
     callbacks = [timing] if args.validation_only else [GradientAccumulation(cfg.task.data, cfg.task.scheduler), EMA(cfg.task.ema.decay), timing]
     trainer = Trainer(accelerator="gpu", devices=1, max_epochs=1, precision="16-mixed",
                       callbacks=callbacks, logger=CSVLogger(str(args.output), name="metrics"),
-                      log_every_n_steps=50, gradient_clip_val=10, gradient_clip_algorithm="norm",
+                      **({"gradient_clip_val": 10, "gradient_clip_algorithm": "norm"}
+                         if module.automatic_optimization else {}),
+                      log_every_n_steps=50,
                       deterministic=True, enable_progress_bar=False, enable_model_summary=False,
                       enable_checkpointing=False, default_root_dir=args.output)
     start = time.perf_counter()
