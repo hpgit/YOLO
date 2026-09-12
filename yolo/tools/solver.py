@@ -10,7 +10,40 @@ from yolo.tools.data_loader import create_dataloader
 from yolo.tools.drawer import draw_bboxes
 from yolo.tools.loss_functions import create_loss_function
 from yolo.utils.bounding_box_utils import create_converter, to_metrics_format
+from yolo.utils.coco_eval import CocoJsonEvaluator
+from yolo.utils.logger import logger
 from yolo.utils.model_utils import PostProcess, create_optimizer, create_scheduler
+
+
+def create_validation_metric(validation_cfg, dataset_cfg):
+    """Prefer authoritative annotation JSON; retain tensor metrics for TXT datasets."""
+    backend = getattr(validation_cfg, "evaluator", "auto")
+    if backend not in {"auto", "coco", "torchmetrics"}:
+        raise ValueError(f"Unknown validation evaluator: {backend!r}")
+    dataset_root = Path(dataset_cfg.path)
+    phase = dataset_cfg.get(validation_cfg.task, validation_cfg.task)
+    configured_path = getattr(validation_cfg, "annotation_path", None)
+    annotation_path = Path(configured_path) if configured_path else Path("annotations") / f"instances_{phase}.json"
+    if not annotation_path.is_absolute():
+        annotation_path = dataset_root / annotation_path
+    # The loader gives an explicit split TXT list precedence over JSON labels.
+    # Match that in auto mode; an explicit JSON request makes JSON authoritative.
+    split_txt = (dataset_root / f"{phase}.txt").is_file()
+    use_json = backend == "coco" or (
+        backend == "auto" and (configured_path or (annotation_path.is_file() and not split_txt))
+    )
+    if use_json:
+        if validation_cfg.data.data_augment:
+            raise ValueError("COCO JSON evaluation requires data_augment={} (PadAndResize only).")
+        metric = CocoJsonEvaluator(annotation_path, image_root=dataset_root / "images" / phase)
+        if len(metric.coco_gt.getCatIds()) != dataset_cfg.class_num:
+            raise ValueError("Annotation category count must match dataset.class_num for COCO evaluation.")
+        logger.info(f"COCO JSON evaluation: {annotation_path}")
+        return metric
+    metric = MeanAveragePrecision(iou_type="bbox", box_format="xyxy", backend="faster_coco_eval")
+    metric.warn_on_many_detections = False
+    logger.info("Tensor GT evaluation (TorchMetrics); official COCO JSON is not used.")
+    return metric
 
 
 class BaseModel(LightningModule):
@@ -30,16 +63,15 @@ class ValidateModel(BaseModel):
             self.validation_cfg = self.cfg.task
         else:
             self.validation_cfg = self.cfg.task.validation
-        self.metric = MeanAveragePrecision(iou_type="bbox", box_format="xyxy", backend="faster_coco_eval")
-        self.metric.warn_on_many_detections = False
         self.val_loader = create_dataloader(self.validation_cfg.data, self.cfg.dataset, self.validation_cfg.task)
+        self.metric = create_validation_metric(self.validation_cfg, self.cfg.dataset)
         self.ema = self.model
 
     def setup(self, stage):
         # COCO evaluation reads scores one scalar at a time. Keeping states on
         # CPU avoids thousands of tiny CUDA copies. NCCL/DDP still needs GPU
         # states for TorchMetrics synchronization, so retain that path there.
-        if self._trainer is not None:
+        if self._trainer is not None and not isinstance(self.metric, CocoJsonEvaluator):
             self.metric.compute_on_cpu = self.trainer.world_size == 1
         self.vec2box = create_converter(
             self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
@@ -53,20 +85,26 @@ class ValidateModel(BaseModel):
         batch_size, images, targets, rev_tensor, img_paths = batch
         H, W = images.shape[2:]
         predicts = self.post_process(self.ema(images, shortcut="Main"), image_size=[W, H])
-        self.metric.update(
-            [to_metrics_format(predict) for predict in predicts], [to_metrics_format(target) for target in targets]
-        )
+        if isinstance(self.metric, CocoJsonEvaluator):
+            self.metric.update(predicts, img_paths, image_size=[W, H])
+        else:
+            self.metric.update(
+                [to_metrics_format(predict) for predict in predicts], [to_metrics_format(target) for target in targets]
+            )
         # Batch AP is expensive and not the dataset AP; compute once at epoch end.
         return predicts, None
 
     def on_validation_epoch_end(self):
         epoch_metrics = self.metric.compute()
-        del epoch_metrics["classes"]
-        self.log_dict(epoch_metrics, prog_bar=True, sync_dist=True, rank_zero_only=True)
+        epoch_metrics.pop("classes", None)
+        # COCO evaluator already gathers/deduplicates images and broadcasts one
+        # global result. Averaging rank-local AP is not a valid COCO evaluation.
+        sync_dist = not isinstance(self.metric, CocoJsonEvaluator)
+        epoch_metrics = {key: value.to(self.device) for key, value in epoch_metrics.items()}
+        self.log_dict(epoch_metrics, prog_bar=True, sync_dist=sync_dist)
         self.log_dict(
             {"PyCOCO/AP @ .5:.95": epoch_metrics["map"], "PyCOCO/AP @ .5": epoch_metrics["map_50"]},
-            sync_dist=True,
-            rank_zero_only=True,
+            sync_dist=sync_dist,
         )
         self.metric.reset()
 

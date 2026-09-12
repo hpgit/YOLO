@@ -1,5 +1,11 @@
 task: validation
 
+# auto: use COCO JSON unless the loader selects an explicit split TXT list.
+# coco: require JSON; torchmetrics: explicitly retain the legacy evaluator.
+evaluator: auto
+# Optional absolute path, or a path relative to dataset.path.
+annotation_path: null
+
 data:
   batch_size: 32
   image_size: ${image_size}

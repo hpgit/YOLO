@@ -124,6 +124,8 @@ class ValidationConfig:
     task: str
     nms: NMSConfig
     data: DataConfig
+    evaluator: str = "auto"
+    annotation_path: Optional[str] = None
 
 
 @dataclass
