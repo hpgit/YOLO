@@ -1,0 +1,156 @@
+{
+  "txt_label": {
+    "input": [
+      0,
+      0.5,
+      0.5,
+      0.2,
+      0.2
+    ],
+    "actual_xyxy": [
+      [
+        0.0,
+        0.2,
+        0.2,
+        0.5,
+        0.5
+      ]
+    ],
+    "expected_xyxy": [
+      [
+        0,
+        0.4,
+        0.4,
+        0.6,
+        0.6
+      ]
+    ]
+  },
+  "auto_stride_bn": {
+    "changed_buffers": 582,
+    "examined_buffers": 873,
+    "sample": {
+      "model.0.bn.running_var": {
+        "before": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "after": [
+          0.9700000286102295,
+          0.9700000286102295,
+          0.9700000286102295
+        ]
+      },
+      "model.0.bn.num_batches_tracked": {
+        "before": [
+          0
+        ],
+        "after": [
+          1
+        ]
+      },
+      "model.1.bn.running_var": {
+        "before": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "after": [
+          0.9700000286102295,
+          0.9700000286102295,
+          0.9700000286102295
+        ]
+      }
+    }
+  },
+  "accumulation_gradient": {
+    "official_sum_example": 64.0,
+    "lightning_default_example": 16.0
+  },
+  "accumulation_counter_simulation": [
+    {
+      "epoch": 0,
+      "counter_start": 0,
+      "factor_start": 1,
+      "factor_end": 2
+    },
+    {
+      "epoch": 1,
+      "counter_start": 75,
+      "factor_start": 2,
+      "factor_end": 3
+    },
+    {
+      "epoch": 2,
+      "counter_start": 122,
+      "factor_start": 2,
+      "factor_end": 3
+    },
+    {
+      "epoch": 3,
+      "counter_start": 161,
+      "factor_start": 3,
+      "factor_end": 4
+    },
+    {
+      "epoch": 4,
+      "counter_start": 193,
+      "factor_start": 3,
+      "factor_end": 4
+    },
+    {
+      "epoch": 5,
+      "counter_start": 223,
+      "factor_start": 3,
+      "factor_end": 4
+    },
+    {
+      "epoch": 6,
+      "counter_start": 251,
+      "factor_start": 4,
+      "factor_end": 4
+    },
+    {
+      "epoch": 7,
+      "counter_start": 276,
+      "factor_start": 4,
+      "factor_end": 4
+    },
+    {
+      "epoch": 8,
+      "counter_start": 301,
+      "factor_start": 4,
+      "factor_end": 4
+    },
+    {
+      "epoch": 9,
+      "counter_start": 326,
+      "factor_start": 4,
+      "factor_end": 4
+    }
+  ],
+  "coco_val_annotations": {
+    "images": 5000,
+    "annotations": 36781,
+    "crowd_excluded": 446,
+    "noncrowd_images_gt_over100": 0,
+    "noncrowd_gt_dropped_by_cap": 0,
+    "polygon_vs_bbox_gt_compared": 36335,
+    "polygon_bbox_diff_gt1px": 0,
+    "polygon_bbox_maxdiff_px": 1.1368683772161603e-13
+  },
+  "checkpoint_loader_probe": {
+    "regular_weight": 2,
+    "ema_weight": 7,
+    "loaded_weight": 2.0
+  },
+  "provenance": {
+    "local_commit": "82b604ae5f0a01209add9df71412412935618b71",
+    "reference_commit": "5b1ea9a8b3f0ffe4fe0e203ec6232d788bb3fcff",
+    "torch": "2.6.0+cu124",
+    "lightning": "2.6.6",
+    "torchmetrics": "1.9.0",
+    "scope": "CPU behavioral probes and COCO val annotation inspection; not AP reproduction"
+  }
+}
