@@ -97,3 +97,5 @@ LR/momentum recipe 등 감사에 기록된 다른 차이는 별도 검증 대상
 조건에서 누적 update가 맞는지를 검증한 것이다. checkpoint counter 저장은 epoch 경계 재개를 위한 것이며,
 미완성 gradient 자체를 저장하지 않으므로 epoch 중간 accumulation의 정확한 재개를 보장하지 않는다.
 standalone 평가의 EMA 가중치 선택 문제(감사 5번 전체)도 별도 작업이다.
+
+후속 작업: [학습 증강 recipe(감사 4번)](augmentation-reproduction.md)도 원본에 맞췄다. 마지막 mosaic 종료는 요청에 따라 제외했다.

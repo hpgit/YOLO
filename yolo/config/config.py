@@ -57,7 +57,7 @@ class DataConfig:
     pin_memory: bool
     cpu_num: int
     image_size: List[int]
-    data_augment: Dict[str, int]
+    data_augment: Dict[str, Any]
     source: Optional[Union[str, int]]
     dynamic_shape: Optional[bool]
     equivalent_batch_size: Optional[int] = 64

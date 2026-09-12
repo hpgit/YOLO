@@ -3,7 +3,7 @@
 비교 기준: 현재 저장소 `82b604ae5f0a01209add9df71412412935618b71`, 원본 WongKinYiu/yolov9 `5b1ea9a8b3f0ffe4fe0e203ec6232d788bb3fcff`.
 원본은 `/tmp/yolov9-reference-20260912`에 읽기 비교용으로 clone했다. 아래 내용과 probe 결과는 수정 전 스냅샷이다.
 
-후속 수정: [공식 COCO 평가(1번)](../coco-evaluation.md), [stride 탐색과 누적 학습 update(2·3번)](../training-reproduction.md).
+후속 수정: [공식 COCO 평가(1번)](../coco-evaluation.md), [stride 탐색과 누적 학습 update(2·3번)](../training-reproduction.md), [학습 증강(4번, 마지막 mosaic 종료 제외)](../augmentation-reproduction.md).
 
 우선순위는 COCO 논문 수치 재현에서의 진단 중요도이며, AP 하락 폭을 측정한 순위가 아니다. 전체 학습 및 같은 체크포인트의 양쪽 COCO AP 비교는 수행하지 않았다.
 

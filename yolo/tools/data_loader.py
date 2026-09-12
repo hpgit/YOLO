@@ -1,3 +1,4 @@
+from functools import partial
 from pathlib import Path
 from queue import Empty, Queue
 from statistics import mean
@@ -198,7 +199,7 @@ class YoloDataset(Dataset):
         return len(self.bboxes)
 
 
-def collate_fn(batch: List[Tuple[Tensor, Tensor]]) -> Tuple[Tensor, List[Tensor]]:
+def collate_fn(batch: List[Tuple[Tensor, Tensor]], max_boxes=100) -> Tuple[Tensor, List[Tensor]]:
     """
     A collate function to handle batching of images and their corresponding targets.
 
@@ -214,12 +215,11 @@ def collate_fn(batch: List[Tuple[Tensor, Tensor]]) -> Tuple[Tensor, List[Tensor]
     """
     batch_size = len(batch)
     target_sizes = [item[1].size(0) for item in batch]
-    # TODO: Improve readability of these process
-    # TODO: remove maxBbox or reduce loss function memory usage
-    batch_targets = torch.zeros(batch_size, min(max(target_sizes), 100), 5)
+    target_limit = max(target_sizes) if max_boxes is None else min(max(target_sizes), max_boxes)
+    batch_targets = torch.zeros(batch_size, target_limit, 5)
     batch_targets[:, :, 0] = -1
     for idx, target_size in enumerate(target_sizes):
-        batch_targets[idx, : min(target_size, 100)] = batch[idx][1][:100]
+        batch_targets[idx, : min(target_size, target_limit)] = batch[idx][1][:target_limit]
 
     batch_images, _, batch_reverse, batch_path = zip(*batch)
     batch_images = torch.stack(batch_images)
@@ -234,14 +234,25 @@ def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: st
 
     if getattr(dataset_cfg, "auto_download", False):
         prepare_dataset(dataset_cfg, task)
-    dataset = YoloDataset(data_cfg, dataset_cfg, task)
+    reference_recipe = "YOLOv9" in data_cfg.data_augment
+    if reference_recipe:
+        if task != "train":
+            raise ValueError("YOLOv9 augmentation is only supported for training.")
+        if len(data_cfg.data_augment) != 1:
+            raise ValueError("YOLOv9 is a complete augmentation recipe; do not append legacy transforms.")
+        from yolo.tools.yolov9_dataset import YOLOv9Dataset
+
+        dataset = YOLOv9Dataset(data_cfg, dataset_cfg, task)
+    else:
+        dataset = YoloDataset(data_cfg, dataset_cfg, task)
 
     return DataLoader(
         dataset,
         batch_size=data_cfg.batch_size,
         num_workers=data_cfg.cpu_num,
         pin_memory=data_cfg.pin_memory,
-        collate_fn=collate_fn,
+        # Mosaic/MixUp can produce over 100 labels; preserve every target.
+        collate_fn=partial(collate_fn, max_boxes=None) if reference_recipe else collate_fn,
     )
 
 
