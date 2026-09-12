@@ -12,6 +12,46 @@ from yolo.utils.logger import logger
 from yolo.utils.nms_utils import grouped_batched_nms as batched_nms
 
 
+def _probe_model(model: YOLO, image_size, fallback_device):
+    """Run a side-effect-free dummy forward pass and restore every module mode."""
+    modules = tuple(model.modules())
+    training_states = tuple(module.training for module in modules)
+
+    reference = next(model.parameters(), None)
+    if reference is None:
+        reference = next(model.buffers(), None)
+    device = reference.device if reference is not None else fallback_device
+    dtype = reference.dtype if reference is not None else torch.get_default_dtype()
+
+    W, H = image_size
+    try:
+        model.eval()
+        with torch.inference_mode():
+            return model(torch.zeros((1, 3, H, W), device=device, dtype=dtype))
+    finally:
+        for module, training in zip(modules, training_states):
+            module.training = training
+
+
+def _strides_from_feature_maps(feature_maps, image_size):
+    """Infer one integer stride per feature map from both spatial dimensions."""
+    W, H = image_size
+    strides = []
+    for feature_map in feature_maps:
+        feature_h, feature_w = feature_map.shape[-2:]
+        if H % feature_h or W % feature_w:
+            raise ValueError(
+                f"Image size {(W, H)} is not divisible by feature map size {(feature_w, feature_h)}"
+            )
+        stride_h, stride_w = H // feature_h, W // feature_w
+        if stride_h != stride_w:
+            raise ValueError(
+                f"Feature map size {(feature_w, feature_h)} has inconsistent strides {(stride_w, stride_h)}"
+            )
+        strides.append(stride_w)
+    return strides
+
+
 def calculate_iou(bbox1, bbox2, metrics="iou", aligned=False) -> Tensor:
     metrics = metrics.lower()
     EPS = 1e-7
@@ -355,15 +395,9 @@ class Vec2Box:
         self.anchor_grid, self.scaler = anchor_grid.to(device), scaler.to(device)
 
     def create_auto_anchor(self, model: YOLO, image_size):
-        W, H = image_size
         # TODO: need accelerate dummy test
-        dummy_input = torch.zeros(1, 3, H, W)
-        dummy_output = model(dummy_input)
-        strides = []
-        for predict_head in dummy_output["Main"]:
-            _, _, *anchor_num = predict_head[2].shape
-            strides.append(W // anchor_num[1])
-        return strides
+        dummy_output = _probe_model(model, image_size, self.device)
+        return _strides_from_feature_maps((predict_head[2] for predict_head in dummy_output["Main"]), image_size)
 
     def update(self, image_size):
         """
@@ -410,14 +444,8 @@ class Anc2Box:
         self.class_num = model.num_classes
 
     def create_auto_anchor(self, model: YOLO, image_size):
-        W, H = image_size
-        dummy_input = torch.zeros(1, 3, H, W).to(self.device)
-        dummy_output = model(dummy_input)
-        strides = []
-        for predict_head in dummy_output["Main"]:
-            _, _, *anchor_num = predict_head.shape
-            strides.append(W // anchor_num[1])
-        return strides
+        dummy_output = _probe_model(model, image_size, self.device)
+        return _strides_from_feature_maps(dummy_output["Main"], image_size)
 
     def generate_anchors(self, image_size: List[int]):
         anchor_grids = []
