@@ -15,6 +15,7 @@ import logging
 from collections import deque
 from logging import FileHandler
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -58,6 +59,92 @@ class YOLOCustomProgress(CustomProgress):
         if hasattr(self, "table"):
             renderable = Group(*self.get_renderables(), self.table)
         return renderable
+
+
+class YOLOQuietEpochSummary(Callback):
+    """Print epoch losses and validation scores even when progress logging is disabled."""
+
+    metric_labels = {
+        "map": "AP", "map_50": "AP50", "map_75": "AP75",
+        "map_small": "AP_small", "map_medium": "AP_medium", "map_large": "AP_large",
+        "mar_1": "AR1", "mar_10": "AR10", "mar_100": "AR100",
+        "mar_small": "AR_small", "mar_medium": "AR_medium", "mar_large": "AR_large",
+    }
+
+    def __init__(self):
+        self._validated = False
+        self._train_seconds = 0.0
+        self._validation_seconds = 0.0
+        self._train_batches = 0
+        self._validation_batches = 0
+        self._train_started = None
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        self._validated = False
+        self._train_seconds = self._validation_seconds = 0.0
+        self._train_batches = self._validation_batches = 0
+        self._train_started = perf_counter()
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        self._train_batches += 1
+
+    def on_validation_start(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        now = perf_counter()
+        if self._train_started is not None:
+            self._train_seconds += now - self._train_started
+            self._train_started = None
+        if trainer.state.fn != "fit":
+            self._validation_seconds = 0.0
+            self._validation_batches = 0
+        self._validation_started = now
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        if not trainer.sanity_checking:
+            self._validation_batches += 1
+
+    def on_validation_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        now = perf_counter()
+        self._validation_seconds += now - self._validation_started
+        self._validated = True
+        if trainer.state.fn == "fit":
+            self._train_started = now
+        else:
+            self._print_summary(trainer)
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if self._train_started is not None:
+            self._train_seconds += perf_counter() - self._train_started
+            self._train_started = None
+        # Lightning finalizes training loss reductions after the validation loop.
+        if self._validated:
+            self._print_summary(trainer)
+
+    def _print_summary(self, trainer):
+        metrics = trainer.callback_metrics
+        if not trainer.is_global_zero:
+            return
+        fields = [f"Epoch {trainer.current_epoch + 1}"]
+        if trainer.state.fn == "fit":
+            fields.append(self._format_timing("train", self._train_seconds, self._train_batches))
+        fields.append(self._format_timing("validation", self._validation_seconds, self._validation_batches))
+        for name, value in metrics.items():
+            if "Loss" in name and name.endswith("_epoch"):
+                fields.append(f"{name.removesuffix('_epoch')}={float(value):.4f}")
+        for name, label in self.metric_labels.items():
+            if name in metrics:
+                value = float(metrics[name])
+                score = f"{value * 100:.2f}%" if value >= 0 else "N/A"
+                fields.append(f"{label}={score}")
+        print(" | ".join(fields), flush=True)
+
+    @staticmethod
+    def _format_timing(stage, seconds, batches):
+        speed = f"{batches / seconds:.2f}" if seconds > 0 else "N/A"
+        return f"{stage}={seconds:.2f}s ({speed} it/s)"
 
 
 class YOLORichProgressBar(RichProgressBar):
@@ -259,7 +346,7 @@ def setup_logger(logger_name, quiet=False):
 
 
 def setup(cfg: Config):
-    quiet = hasattr(cfg, "quiet")
+    quiet = getattr(cfg, "quiet", False)
     setup_logger("lightning.fabric", quiet=quiet)
     setup_logger("lightning.pytorch", quiet=quiet)
 
@@ -282,6 +369,7 @@ def setup(cfg: Config):
         progress.append(EMA(cfg.task.ema.decay))
     if quiet:
         logger.setLevel(logging.ERROR)
+        progress.append(YOLOQuietEpochSummary())
         return progress, loggers, save_path
 
     progress.append(YOLORichProgressBar())
