@@ -91,9 +91,11 @@ class QuietSummaryTestModel(ProgressTestModel):
 
 @pytest.mark.parametrize("validation_interval", [1, 2])
 def test_quiet_summary_epoch_averages_after_validation(tmp_path, capsys, validation_interval):
+    result_path = tmp_path / "result.log"
+    result_path.write_text("previous run\n", encoding="utf-8")
     trainer = Trainer(
         accelerator="cpu", devices=1, max_epochs=2,
-        callbacks=[YOLOQuietEpochSummary()], logger=False,
+        callbacks=[YOLOQuietEpochSummary(result_path)], logger=False,
         enable_progress_bar=False, enable_checkpointing=False, enable_model_summary=False,
         num_sanity_val_steps=2, check_val_every_n_epoch=validation_interval,
         default_root_dir=tmp_path,
@@ -102,6 +104,7 @@ def test_quiet_summary_epoch_averages_after_validation(tmp_path, capsys, validat
     trainer.fit(QuietSummaryTestModel(), train_dataloaders=loader, val_dataloaders=loader)
 
     lines = capsys.readouterr().out.splitlines()
+    assert result_path.read_text(encoding="utf-8").splitlines() == ["previous run", *lines]
     assert len(lines) == 2 // validation_interval
     for epoch, line in zip(range(validation_interval, 3, validation_interval), lines):
         assert line.startswith(f"Epoch {epoch} | ")
@@ -132,17 +135,21 @@ def test_setup_selects_summary_only_when_quiet(tmp_path, monkeypatch, quiet):
     assert any(isinstance(callback, YOLOQuietEpochSummary) for callback in callbacks) == quiet
     assert any(isinstance(callback, YOLORichProgressBar) for callback in callbacks) != quiet
     assert loggers == []
+    if quiet:
+        summary = next(callback for callback in callbacks if isinstance(callback, YOLOQuietEpochSummary))
+        assert summary.result_path == tmp_path / "result.log"
 
 
 @pytest.mark.parametrize("is_global_zero", [False, True])
-def test_quiet_summary_times_exclude_validation(monkeypatch, capsys, is_global_zero):
+def test_quiet_summary_times_exclude_validation(tmp_path, monkeypatch, capsys, is_global_zero):
     times = iter([10.0, 16.0, 19.0, 21.0])
     monkeypatch.setattr(logging_utils, "perf_counter", lambda: next(times))
     trainer = SimpleNamespace(
         sanity_checking=False, state=SimpleNamespace(fn="fit"),
         current_epoch=0, callback_metrics={}, is_global_zero=is_global_zero,
     )
-    summary = YOLOQuietEpochSummary()
+    result_path = tmp_path / "result.log"
+    summary = YOLOQuietEpochSummary(result_path)
     summary.on_train_epoch_start(trainer, None)
     for index in range(4):
         summary.on_train_batch_end(trainer, None, None, None, index)
@@ -156,5 +163,7 @@ def test_quiet_summary_times_exclude_validation(monkeypatch, capsys, is_global_z
     output = capsys.readouterr().out
     if is_global_zero:
         assert output == "Epoch 1 | train=8.00s (0.50 it/s) | validation=3.00s (2.00 it/s)\n"
+        assert result_path.read_text(encoding="utf-8") == output
     else:
         assert output == ""
+        assert not result_path.exists()

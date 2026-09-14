@@ -61,7 +61,7 @@ class YOLOCustomProgress(CustomProgress):
 
 
 class YOLOQuietEpochSummary(Callback):
-    """Print epoch losses and validation scores even when progress logging is disabled."""
+    """Print epoch summaries and optionally append them to the experiment's result log."""
 
     metric_labels = {
         "map": "AP", "map_50": "AP50", "map_75": "AP75",
@@ -70,7 +70,8 @@ class YOLOQuietEpochSummary(Callback):
         "mar_small": "AR_small", "mar_medium": "AR_medium", "mar_large": "AR_large",
     }
 
-    def __init__(self):
+    def __init__(self, result_path: Optional[Path] = None):
+        self.result_path = result_path
         self._validated = False
         self._train_seconds = 0.0
         self._validation_seconds = 0.0
@@ -138,7 +139,11 @@ class YOLOQuietEpochSummary(Callback):
                 value = float(metrics[name])
                 score = f"{value * 100:.2f}%" if value >= 0 else "N/A"
                 fields.append(f"{label}={score}")
-        print(" | ".join(fields), flush=True)
+        summary = " | ".join(fields)
+        print(summary, flush=True)
+        if self.result_path is not None:
+            with self.result_path.open("a", encoding="utf-8") as result_file:
+                result_file.write(summary + "\n")
 
     @staticmethod
     def _format_timing(stage, seconds, batches):
@@ -373,7 +378,7 @@ def setup(cfg: Config, *, resume=False):
         progress.append(EMA(cfg.task.ema.decay))
     if quiet:
         logger.setLevel(logging.ERROR)
-        progress.append(YOLOQuietEpochSummary())
+        progress.append(YOLOQuietEpochSummary(save_path / "result.log" if save_path is not None else None))
         return progress, loggers, save_path
 
     progress.append(YOLORichProgressBar())

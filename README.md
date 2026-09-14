@@ -77,6 +77,12 @@ To perform transfer learning with YOLOv9:
 python yolo/lazy.py task=train task.data.batch_size=8 model=v9-c dataset={dataset_config} device={cpu, mps, cuda}
 ```
 
+With `+quiet=True`, each validated epoch prints a single line containing average losses,
+AP/AR, and training/validation time and throughput. The same line is appended to
+`result.log` in the experiment directory (by default, `runs/train/<name>/result.log`).
+Resuming in the same directory preserves existing lines. Sanity validation is excluded,
+and only the global-zero process writes the summary in distributed runs.
+
 ### Inference
 
 To use a model for object detection, use:
