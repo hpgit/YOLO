@@ -56,7 +56,7 @@ These are simple examples. For more customization details, please refer to [Note
 
 For a reproducible COCO 1/20 subset and training/validation speed comparisons, see the [subset performance guide (한국어)](docs/performance-coco-subset.md).
 
-Named runs automatically resume their latest checkpoint unless `weight` is explicitly set.
+Named runs automatically resume their latest checkpoint when `weight` is omitted or `weight=False`.
 See [checkpoint saving and resumption (한국어)](docs/checkpoints.md) for filename formats, `best.pt`, and weight precedence.
 
 To train YOLO on your machine/dataset:

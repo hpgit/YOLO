@@ -44,10 +44,20 @@ def test_latest_checkpoint_uses_numeric_saved_progress_and_scopes_run(tmp_path):
     assert latest_checkpoint(tmp_path / "missing") is None
 
 
-@pytest.mark.parametrize("weight", [False, None, "best.pt", "pretrained.pt"])
+@pytest.mark.parametrize("weight", [None, "best.pt", "pretrained.pt"])
 def test_explicit_weight_overrides_named_resume(tmp_path, weight):
     snapshot(tmp_path / "train/run/checkpoints/last.ckpt", 8, 90)
     assert resolve_training_checkpoint(config(tmp_path, weight=weight)) is None
+
+
+@pytest.mark.parametrize("weight_explicit", [False, True])
+def test_false_weight_resumes_named_checkpoint_or_starts_without_weights(tmp_path, weight_explicit):
+    cfg = config(tmp_path, weight=False)
+    assert resolve_training_checkpoint(cfg, weight_explicit=weight_explicit) is None
+    snapshot(tmp_path / "train/run/checkpoints/epoch0002-step00000090.ckpt", 2, 90)
+    latest = snapshot(tmp_path / "train/run/checkpoints/epoch0003-step00000120.ckpt", 3, 120)
+    assert resolve_training_checkpoint(cfg, weight_explicit=weight_explicit) == latest
+    assert cfg.weight is False
 
 
 def test_explicit_checkpoint_and_boolean_overrides(tmp_path):
@@ -177,10 +187,11 @@ def test_best_weights_and_full_resume_preserve_training_state(tmp_path, ema):
 
 @pytest.mark.parametrize("weight", [True, False, "best.pt", "explicit.ckpt"])
 @pytest.mark.parametrize("weight_override", [False, True])
+@pytest.mark.parametrize("checkpoint_exists", [False, True])
 def test_training_entrypoint_passes_full_checkpoint_and_avoids_pretrained_load(
-    tmp_path, monkeypatch, weight, weight_override
+    tmp_path, monkeypatch, weight, weight_override, checkpoint_exists
 ):
-    auto = snapshot(tmp_path / "train/run/checkpoints/last.ckpt", 8, 90)
+    auto = snapshot(tmp_path / "train/run/checkpoints/last.ckpt", 8, 90) if checkpoint_exists else None
     explicit = snapshot(tmp_path / "explicit.ckpt", 1, 2)
     cfg = config(tmp_path, weight=str(explicit) if weight == "explicit.ckpt" else weight)
     calls = {}
@@ -199,7 +210,10 @@ def test_training_entrypoint_passes_full_checkpoint_and_avoids_pretrained_load(
     monkeypatch.setattr(lazy, "Trainer", lambda **kwargs: SimpleNamespace(fit=fit))
     monkeypatch.setattr(lazy, "TrainModel", create_model)
     lazy.main.__wrapped__(cfg)
-    expected = auto if weight is True and not weight_override else explicit if weight == "explicit.ckpt" else None
+    if weight is False or (weight is True and not weight_override):
+        expected = auto
+    else:
+        expected = explicit if weight == "explicit.ckpt" else None
     assert calls["checkpoint"] == expected
     assert calls["weight"] == (False if expected else cfg.weight)
     assert cfg.weight == (str(explicit) if weight == "explicit.ckpt" else weight)

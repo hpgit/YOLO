@@ -16,7 +16,7 @@
 yolo task=train name=my-run model=v9-t
 ```
 
-명시적인 `weight` 설정이 없으면 해당 실행 폴더 안의 `.ckpt`를 하위 폴더까지 검색하고,
+명시적인 `weight` 설정이 없거나 `weight=False`이면 해당 실행 폴더 안의 `.ckpt`를 하위 폴더까지 검색하고,
 파일 내부의 `(epoch, global_step)`이 가장 큰 체크포인트를 재개합니다. epoch를 먼저 비교하고,
 같은 epoch에서는 step을 비교합니다. 기존 `epoch=...-step=...ckpt`, `last.ckpt`,
 로거의 `version_*/checkpoints/` 경로도 지원합니다. 손상되어 읽을 수 없는 파일은 경고 후 건너뜁니다.
@@ -34,12 +34,16 @@ yolo task=train name=my-run model=v9-t weight=/path/to/epoch0003-step00000042.ck
 # 가중치만 읽고 epoch 0부터 새 학습
 yolo task=train name=fine-tune model=v9-t weight=runs/train/my-run/checkpoints/best.pt
 
+# 체크포인트가 있으면 재개하고, 없으면 무작위 초기화
+yolo task=train name=my-run model=v9-t weight=False
+
 # 자동 재개를 끄고 무작위 / 기본 사전학습 가중치로 새 학습
-yolo task=train name=new-run model=v9-t weight=False
+yolo task=train name=new-run model=v9-t weight=null
 yolo task=train name=new-run model=v9-t weight=True
 ```
 
-명시한 가중치 경로와 CLI의 `weight=True/False/null` 설정은 이름 기반 재개보다 우선합니다.
+명시한 가중치 경로와 CLI의 `weight=True/null` 설정은 이름 기반 재개보다 우선합니다.
+`weight=False`는 예외적으로 이름 기반 재개를 허용하며, 체크포인트가 없을 때만 무작위 초기화합니다.
 기본 설정 파일의 `weight: True`는 자동 재개를 막지 않습니다. 가중치만 담긴 `best.pt`에는
 optimizer나 학습 진행 상태가 없으므로 전체 학습 재개에는 `.ckpt`를 사용합니다.
 

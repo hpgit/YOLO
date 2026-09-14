@@ -80,9 +80,9 @@ def resolve_training_checkpoint(cfg, *, weight_explicit=False):
                 raise FileNotFoundError(f"Training checkpoint does not exist: {path}")
             return path.resolve()
         return None
-    # False/null explicitly requests random initialization; an explicit CLI
-    # weight=True requests pretrained initialization instead of automatic resume.
-    if weight_explicit or weight is False or weight is None or not cfg.name:
+    # False permits named-run resume, falling back to random initialization.
+    # Explicit True/null still request fresh pretrained/random initialization.
+    if (weight_explicit and weight is not False) or weight is None or not cfg.name:
         return None
     path = latest_checkpoint(Path(cfg.out_path) / "train" / cfg.name)
     return path.resolve() if path else None
