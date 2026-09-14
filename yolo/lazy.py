@@ -56,7 +56,12 @@ def main(cfg: Config):
         trainer.validate(model)
     if cfg.task.task == "inference":
         model = InferenceModel(cfg)
-        trainer.predict(model)
+        try:
+            # Predictions are displayed/saved per frame; do not retain all COCO
+            # visualizations in memory for a return value the CLI never uses.
+            trainer.predict(model, return_predictions=False)
+        finally:
+            model.predict_loader.stop()
 
 
 if __name__ == "__main__":
