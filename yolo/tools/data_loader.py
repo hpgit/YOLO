@@ -7,6 +7,7 @@ from typing import Generator, List, Tuple, Union
 
 import numpy as np
 import torch
+from lightning.fabric.utilities.seed import pl_worker_init_function
 from PIL import Image
 from rich.progress import track
 from torch import Tensor
@@ -232,6 +233,10 @@ def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: st
     if task == "inference":
         return StreamDataLoader(data_cfg)
 
+    shuffle = data_cfg.shuffle
+    if shuffle and getattr(data_cfg, "dynamic_shape", False):
+        raise ValueError("dynamic_shape=True requires shuffle=False so each batch has matching image shapes.")
+
     if getattr(dataset_cfg, "auto_download", False):
         prepare_dataset(dataset_cfg, task)
     reference_recipe = "YOLOv9" in data_cfg.data_augment
@@ -249,8 +254,14 @@ def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: st
     return DataLoader(
         dataset,
         batch_size=data_cfg.batch_size,
+        shuffle=shuffle,
         num_workers=data_cfg.cpu_num,
         pin_memory=data_cfg.pin_memory,
+        # Keep sampling/worker seeds independent of model and validation RNG use.
+        # The generator advances between epochs; do not reseed it on iteration.
+        generator=torch.Generator().manual_seed(torch.initial_seed()),
+        # Also seed augmentation RNGs when iterating without a Lightning Trainer.
+        worker_init_fn=pl_worker_init_function,
         # Mosaic/MixUp can produce over 100 labels; preserve every target.
         collate_fn=partial(collate_fn, max_boxes=None) if reference_recipe else collate_fn,
     )

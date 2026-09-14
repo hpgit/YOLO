@@ -7,7 +7,7 @@ image_size: [640, 640]
 out_path: runs
 exist_ok: True
 
-lucky_number: 10
+lucky_number: 10 # Seed for model initialization, data shuffle, and augmentation
 use_wandb: True
 use_tensorboard: False
 

@@ -46,10 +46,8 @@ from yolo.utils.solver_utils import make_ap_table
 
 # TODO: should be moved to correct position
 def set_seed(seed):
-    seed_everything(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    """Seed Python, NumPy, PyTorch (including CUDA), and Lightning workers."""
+    seed_everything(seed, workers=True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 

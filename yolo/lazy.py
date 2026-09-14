@@ -13,11 +13,13 @@ from yolo.config.config import Config
 from yolo.tools.solver import InferenceModel, TrainModel, ValidateModel
 from yolo.utils.checkpoint_utils import resolve_training_checkpoint
 from yolo.utils.logger import logger
-from yolo.utils.logging_utils import setup
+from yolo.utils.logging_utils import set_seed, setup
 
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: Config):
+    # Seed before constructing models, datasets, callbacks, or the Trainer.
+    set_seed(cfg.lucky_number)
     if cfg.task.task == "export":
         from yolo.tools.export import export_model
 

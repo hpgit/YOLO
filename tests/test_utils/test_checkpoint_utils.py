@@ -19,7 +19,7 @@ from yolo.utils.model_utils import EMA
 def config(tmp_path, **kwargs):
     return OmegaConf.create({
         "task": {"task": "train", "data": {}}, "name": "run", "weight": True,
-        "out_path": str(tmp_path), "exist_ok": False, "quiet": True,
+        "out_path": str(tmp_path), "exist_ok": False, "quiet": True, "lucky_number": 10,
         "use_wandb": False, "use_tensorboard": False, "device": 1, **kwargs,
     })
 

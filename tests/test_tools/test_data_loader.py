@@ -1,4 +1,5 @@
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 from torch.utils.data import DataLoader
@@ -11,6 +12,7 @@ from yolo.tools.data_loader import StreamDataLoader, create_dataloader
 
 
 def test_create_dataloader_cache(train_cfg: Config):
+    train_cfg = deepcopy(train_cfg)
     train_cfg.task.data.shuffle = False
     train_cfg.task.data.batch_size = 2
 
@@ -27,8 +29,12 @@ def test_create_dataloader_cache(train_cfg: Config):
     assert m_image_paths == l_image_paths
 
 
-def test_training_data_loader_correctness(train_dataloader: DataLoader):
+def test_training_data_loader_correctness(train_cfg: Config):
     """Test that the training data loader produces correctly shaped data and metadata."""
+    train_cfg = deepcopy(train_cfg)
+    train_cfg.task.data.batch_size = 2
+    train_cfg.task.data.shuffle = False
+    train_dataloader = create_dataloader(train_cfg.task.data, train_cfg.dataset)
     batch_size, images, _, reverse_tensors, image_paths = next(iter(train_dataloader))
     assert batch_size == 2
     assert images.shape == (2, 3, 640, 640)

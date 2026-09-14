@@ -50,8 +50,8 @@ def draw_bboxes(
         y_min, y_max = min(y_min, y_max), max(y_min, y_max)
         bbox = [(x_min, y_min), (x_max, y_max)]
 
-        random.seed(int(class_id))
-        color_map = (random.randint(0, 200), random.randint(0, 200), random.randint(0, 200))
+        color_rng = random.Random(int(class_id))
+        color_map = tuple(color_rng.randint(0, 200) for _ in range(3))
 
         draw.rounded_rectangle(bbox, outline=(*color_map, 200), radius=5, width=2)
         draw.rounded_rectangle(bbox, fill=(*color_map, 100), radius=5)
