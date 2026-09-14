@@ -6,7 +6,7 @@ hydra-core
 lightning
 loguru
 numpy
-opencv-python
+opencv-python-headless
 Pillow
 pycocotools
 requests
