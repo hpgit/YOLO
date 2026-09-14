@@ -106,10 +106,10 @@ def test_training_sanity_validation_and_checkpoint_monitor_use_coco_json(configs
 
     from hydra import compose, initialize_config_dir
     from lightning import Trainer
-    from lightning.pytorch.callbacks import ModelCheckpoint
     from PIL import Image
 
     from yolo.tools.solver import TrainModel
+    from yolo.utils.checkpoint_utils import YOLOCheckpoint
     from yolo.utils.model_utils import EMA
 
     image_dir = tmp_path / "images" / "val"
@@ -120,10 +120,11 @@ def test_training_sanity_validation_and_checkpoint_monitor_use_coco_json(configs
             "task=train", "model=v9-t", "dataset=mock", "weight=false", "dataset.auto_download=null",
             f"dataset.path={tmp_path}", "dataset.train=val", "dataset.class_num=1",
             "image_size=[64,64]", "cpu_num=0", "task.data.batch_size=1", "task.validation.data.batch_size=1",
-            "task.epoch=2", "use_wandb=false",
+            "task.epoch=3", "use_wandb=false",
         ])
     cfg.task.data.data_augment = {}
-    checkpoint = ModelCheckpoint(dirpath=tmp_path / "checkpoints", monitor="map", mode="max", save_last=True)
+    checkpoint = YOLOCheckpoint(tmp_path / "checkpoints")
+    torch.manual_seed(10)
     model = TrainModel(cfg)
     trainer = Trainer(accelerator="cpu", devices=1, precision="32-true", max_epochs=2,
                       callbacks=[EMA(cfg.task.ema.decay), checkpoint], logger=False,
@@ -133,4 +134,40 @@ def test_training_sanity_validation_and_checkpoint_monitor_use_coco_json(configs
     assert trainer.current_epoch == 2
     assert torch.isfinite(trainer.callback_metrics["map"])
     assert Path(checkpoint.best_model_path).is_file()
+    assert Path(checkpoint.best_model_path).name == f"epoch0001-step{trainer.global_step:08d}.ckpt"
+    saved = torch.load(checkpoint.best_model_path, weights_only=False)
+    assert saved["epoch"] == 1
+    assert saved["training_accumulation"]["last_opt_step"] == model._last_opt_step
+    assert saved["training_optimizer"]["max_lr"] == trainer.optimizers[0].max_lr
+    weights = torch.load(tmp_path / "checkpoints/best.pt", weights_only=True)
+    assert weights.keys() == model.model.model.state_dict().keys()
+    assert all(torch.isfinite(value).all() for value in weights.values())
     assert model.metric.image_ids == []
+
+    # Compare an actual YOLOv9-t epoch-boundary resume against uninterrupted
+    # training, including the custom LR interpolation and accumulation state.
+    resumed_model = TrainModel(cfg)
+    resumed_ema = EMA(cfg.task.ema.decay)
+    resumed = Trainer(
+        accelerator="cpu", devices=1, precision="32-true", max_epochs=3,
+        callbacks=[resumed_ema, YOLOCheckpoint(tmp_path / "checkpoints")], logger=False,
+        enable_progress_bar=False, enable_model_summary=False, default_root_dir=tmp_path,
+    )
+    resumed.fit(resumed_model, ckpt_path=checkpoint.best_model_path)
+    torch.manual_seed(10)
+    reference_model = TrainModel(cfg)
+    reference_ema = EMA(cfg.task.ema.decay)
+    reference = Trainer(
+        accelerator="cpu", devices=1, precision="32-true", max_epochs=3,
+        callbacks=[reference_ema], logger=False, enable_checkpointing=False,
+        enable_progress_bar=False, enable_model_summary=False, default_root_dir=tmp_path,
+    )
+    reference.fit(reference_model)
+    assert resumed.global_step == reference.global_step
+    assert resumed_model._last_opt_step == reference_model._last_opt_step
+    assert resumed_ema.step == reference_ema.step
+    assert resumed.optimizers[0].param_groups[0]["lr"] == reference.optimizers[0].param_groups[0]["lr"]
+    for key, value in reference_model.model.state_dict().items():
+        torch.testing.assert_close(resumed_model.model.state_dict()[key], value, rtol=0, atol=0)
+    for key, value in reference_ema.ema_state_dict.items():
+        torch.testing.assert_close(resumed_ema.ema_state_dict[key], value, rtol=0, atol=0)

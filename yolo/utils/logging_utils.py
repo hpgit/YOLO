@@ -38,6 +38,7 @@ from typing_extensions import override
 
 from yolo.config.config import Config, YOLOLayer
 from yolo.model.yolo import YOLO
+from yolo.utils.checkpoint_utils import YOLOCheckpoint
 from yolo.utils.logger import logger
 from yolo.utils.model_utils import EMA, GradientAccumulation
 from yolo.utils.solver_utils import make_ap_table
@@ -345,7 +346,7 @@ def setup_logger(logger_name, quiet=False):
     coco_logger.setLevel(logging.ERROR)
 
 
-def setup(cfg: Config):
+def setup(cfg: Config, *, resume=False):
     quiet = getattr(cfg, "quiet", False)
     setup_logger("lightning.fabric", quiet=quiet)
     setup_logger("lightning.pytorch", quiet=quiet)
@@ -358,9 +359,14 @@ def setup(cfg: Config):
 
     wandb.errors.term._log = custom_wandb_log
 
-    save_path = validate_log_directory(cfg, cfg.name)
+    save_path = validate_log_directory(cfg, cfg.name, resume=True) if resume else validate_log_directory(cfg, cfg.name)
 
     progress, loggers = [], []
+
+    if cfg.task.task == "train":
+        # Nonzero DDP ranks skip directory creation; ModelCheckpoint.setup
+        # broadcasts the checkpoint directory selected by rank zero.
+        progress.append(YOLOCheckpoint(save_path / "checkpoints" if save_path is not None else None))
 
     if cfg.task.task == "train" and hasattr(cfg.task.data, "equivalent_batch_size"):
         progress.append(GradientAccumulation(data_cfg=cfg.task.data, scheduler_cfg=cfg.task.scheduler))
@@ -412,11 +418,11 @@ def log_model_structure(model: Union[ModuleList, YOLOLayer, YOLO]):
 
 
 @rank_zero_only
-def validate_log_directory(cfg: Config, exp_name: str) -> Path:
+def validate_log_directory(cfg: Config, exp_name: str, *, resume=False) -> Path:
     base_path = Path(cfg.out_path, cfg.task.task)
     save_path = base_path / exp_name
 
-    if not cfg.exist_ok:
+    if not cfg.exist_ok and not resume:
         index = 1
         old_exp_name = exp_name
         while save_path.is_dir():
@@ -424,8 +430,8 @@ def validate_log_directory(cfg: Config, exp_name: str) -> Path:
             save_path = base_path / exp_name
             index += 1
         if index > 1:
-            logger.opt(colors=True).warning(
-                f"🔀 Experiment directory exists! Changed <red>{old_exp_name}</> to <green>{exp_name}</>"
+            logger.warning(
+                f"🔀 Experiment directory exists! Changed [red]{old_exp_name}[/] to [green]{exp_name}[/]"
             )
 
     save_path.mkdir(parents=True, exist_ok=True)

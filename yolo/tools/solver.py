@@ -124,6 +124,13 @@ class TrainModel(ValidateModel):
     def train_dataloader(self):
         return self.train_loader
 
+    def on_train_start(self):
+        max_lr = getattr(self, "_restored_optimizer_max_lr", None)
+        if max_lr is not None:
+            # Custom per-batch interpolation uses the preceding epoch's target
+            # LR, which is not part of torch.optim.Optimizer.state_dict().
+            self.trainer.optimizers[0].max_lr = max_lr
+
     def on_train_epoch_start(self):
         batches = self.trainer.num_training_batches
         if not isfinite(batches) or batches <= 0:
@@ -164,9 +171,11 @@ class TrainModel(ValidateModel):
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["training_accumulation"] = {"last_opt_step": self._last_opt_step}
+        checkpoint["training_optimizer"] = {"max_lr": getattr(self.trainer.optimizers[0], "max_lr", None)}
 
     def on_load_checkpoint(self, checkpoint):
         self._last_opt_step = checkpoint.get("training_accumulation", {}).get("last_opt_step", -1)
+        self._restored_optimizer_max_lr = checkpoint.get("training_optimizer", {}).get("max_lr")
 
     def training_step(self, batch, batch_idx):
         lr_dict = self.trainer.optimizers[0].next_batch()
