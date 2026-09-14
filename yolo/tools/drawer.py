@@ -23,7 +23,7 @@ def draw_bboxes(
     Args:
     - img (PIL Image or torch.Tensor): Image on which to draw the bounding boxes.
     - bboxes (List of Lists/Tensors): Bounding boxes with [class_id, x_min, y_min, x_max, y_max],
-      where coordinates are normalized [0, 1].
+      where coordinates are in image pixels, optionally followed by confidence.
     """
     # Convert tensor image to PIL Image if necessary
     if isinstance(img, torch.Tensor):
@@ -46,8 +46,12 @@ def draw_bboxes(
 
     for bbox in bboxes:
         class_id, x_min, y_min, x_max, y_max, *conf = [float(val) for val in bbox]
-        x_min, x_max = min(x_min, x_max), max(x_min, x_max)
-        y_min, y_max = min(y_min, y_max), max(y_min, y_max)
+        # Pillow computes corner radii before rounding fractional coordinates.
+        # For small boxes this can invert its internal outline rectangles even
+        # when x_min <= x_max and y_min <= y_max. Rasterize first, leaving the
+        # original prediction coordinates unchanged.
+        x_min, x_max = round(min(x_min, x_max)), round(max(x_min, x_max))
+        y_min, y_max = round(min(y_min, y_max)), round(max(y_min, y_max))
         bbox = [(x_min, y_min), (x_max, y_max)]
 
         color_rng = random.Random(int(class_id))
@@ -61,7 +65,7 @@ def draw_bboxes(
 
         text_bbox = font.getbbox(label_text)
         text_width = text_bbox[2] - text_bbox[0]
-        text_height = (text_bbox[3] - text_bbox[1]) * 1.5
+        text_height = round((text_bbox[3] - text_bbox[1]) * 1.5)
 
         text_background = [(x_min, y_min), (x_min + text_width, y_min + text_height)]
         draw.rounded_rectangle(text_background, fill=(*color_map, 175), radius=2)
