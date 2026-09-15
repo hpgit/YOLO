@@ -3,7 +3,7 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from statistics import mean
 from threading import Event, Thread
-from typing import Generator, List, Tuple, Union
+from typing import Generator, List, Tuple
 
 import numpy as np
 import torch
@@ -17,6 +17,7 @@ from yolo.config.config import DataConfig, DatasetConfig
 from yolo.tools.data_augmentation import *
 from yolo.tools.data_augmentation import AugmentationComposer
 from yolo.tools.dataset_preparation import prepare_dataset
+from yolo.utils.annotation_utils import parse_yolo_label
 from yolo.utils.dataset_utils import (
     create_image_metadata,
     locate_label_paths,
@@ -33,6 +34,7 @@ class YoloDataset(Dataset):
         phase_name = dataset_cfg.get(phase, phase)
         self.batch_size = data_cfg.batch_size
         self.dynamic_shape = getattr(data_cfg, "dynamic_shape", False)
+        self.class_num = dataset_cfg.get("class_num", None)
         self.base_size = mean(self.image_size)
 
         transforms = [eval(aug)(prob) for aug, prob in augment_cfg.items()]
@@ -53,21 +55,24 @@ class YoloDataset(Dataset):
         """
         cache_path = dataset_path / f"{phase_name}.pache"
 
-        if not cache_path.exists():
-            logger.info(f":factory: Generating {phase_name} cache")
-            data = self.filter_data(dataset_path, phase_name, self.dynamic_shape)
-            torch.save(data, cache_path)
-        else:
+        # Old list-only caches may contain detection rows parsed as polygons.
+        # Rebuild on parser/config changes so fixes cannot be masked by a cache.
+        metadata = {"version": 2, "class_num": self.class_num, "dynamic_shape": self.dynamic_shape}
+        if cache_path.exists():
             try:
-                data = torch.load(cache_path, weights_only=False)
-            except Exception as e:
-                logger.error(
-                    f":rotating_light: Failed to load the cache at '{cache_path}'.\n"
-                    ":rotating_light: This may be caused by using cache from different other YOLO.\n"
-                    ":rotating_light: Please clean the cache and try running again."
-                )
-                raise e
-            logger.info(f":package: Loaded {phase_name} cache, there are {len(data)} data in total.")
+                cached = torch.load(cache_path, weights_only=False)
+            except Exception:
+                logger.warning(f"Unreadable dataset cache at '{cache_path}'; rebuilding from annotations")
+            else:
+                if isinstance(cached, dict) and cached.get("metadata") == metadata:
+                    data = cached["data"]
+                    logger.info(f":package: Loaded {phase_name} cache, there are {len(data)} data in total.")
+                    return data
+                logger.info(f"Rebuilding outdated dataset cache at '{cache_path}'")
+
+        logger.info(f":factory: Generating {phase_name} cache")
+        data = self.filter_data(dataset_path, phase_name, self.dynamic_shape)
+        torch.save({"metadata": metadata, "data": data}, cache_path)
         return data
 
     def filter_data(self, dataset_path: Path, phase_name: str, sort_image: bool = False) -> list:
@@ -89,7 +94,7 @@ class YoloDataset(Dataset):
             data_type, adjust_path = "txt", True
             # TODO: should i sort by name?
             with open(file_list, "r") as file:
-                images_list = [dataset_path / line.rstrip() for line in file]
+                images_list = [dataset_path / line.strip() for line in file if line.strip()]
             labels_list = [
                 Path(str(image_path).replace("images", "labels")).with_suffix(".txt") for image_path in images_list
             ]
@@ -112,17 +117,20 @@ class YoloDataset(Dataset):
                     continue
                 annotations = annotations_index.get(image_info["id"], [])
                 image_seg_annotations = scale_segmentation(annotations, image_info)
+                label_location = f"{labels_path} (image {image_info['id']})"
             elif data_type == "txt":
                 label_path = labels_list[idx] if adjust_path else labels_path / f"{image_id}.txt"
+                label_location = str(label_path)
                 if not label_path.is_file():
                     image_seg_annotations = []
                 else:
                     with open(label_path, "r") as file:
-                        image_seg_annotations = [list(map(float, line.strip().split())) for line in file]
+                        image_seg_annotations = [line.split() for line in file]
             else:
                 image_seg_annotations = []
+                label_location = str(image_name)
 
-            labels = self.load_valid_labels(image_id, image_seg_annotations)
+            labels = self.load_valid_labels(label_location, image_seg_annotations)
             img_path = image_name if adjust_path else images_path / image_name
             if sort_image:
                 with Image.open(img_path) as img:
@@ -130,7 +138,7 @@ class YoloDataset(Dataset):
             else:
                 width, height = 0, 1
             data.append((img_path, labels, width / height))
-            if len(image_seg_annotations) != 0:
+            if len(labels) != 0:
                 valid_inputs += 1
 
         data = sorted(data, key=lambda x: x[2], reverse=True)
@@ -138,32 +146,18 @@ class YoloDataset(Dataset):
         logger.info(f"Recorded {valid_inputs}/{len(images_list)} valid inputs")
         return data
 
-    def load_valid_labels(self, label_path: str, seg_data_one_img: list) -> Union[Tensor, None]:
-        """
-        Loads valid COCO style segmentation data (values between [0, 1]) and converts it to bounding box coordinates
-        by finding the minimum and maximum x and y values.
-
-        Parameters:
-            label_path (str): The filepath to the label file containing annotation data.
-            seg_data_one_img (list): The actual list of annotations (in segmentation format)
-
-        Returns:
-            Tensor or None: A tensor of all valid bounding boxes if any are found; otherwise, None.
-        """
+    def load_valid_labels(self, label_path: str, seg_data_one_img: list) -> Tensor:
+        """Parse normalized YOLO detection or polygon rows into positive xyxy boxes."""
         bboxes = []
-        for seg_data in seg_data_one_img:
-            cls = seg_data[0]
-            points = np.array(seg_data[1:]).reshape(-1, 2).clip(0, 1)
-            valid_points = points[(points >= 0) & (points <= 1)].reshape(-1, 2)
-            if valid_points.size > 1:
-                bbox = torch.tensor([cls, *valid_points.min(axis=0), *valid_points.max(axis=0)])
-                bboxes.append(bbox)
-
-        if bboxes:
-            return torch.stack(bboxes)
-        else:
-            logger.warning(f"No valid BBox in {label_path}")
-            return torch.zeros((0, 5))
+        for line_number, values in enumerate(seg_data_one_img, start=1):
+            if not len(values):
+                continue
+            box, _ = parse_yolo_label(values, f"{label_path}:{line_number}", getattr(self, "class_num", None))
+            # Legacy transforms and tensor validation consume clipped boxes.
+            box[1:] = np.clip(box[1:], 0.0, 1.0).tolist()
+            if box[3] > box[1] and box[4] > box[2]:
+                bboxes.append(box)
+        return torch.tensor(bboxes, dtype=torch.float32).reshape(-1, 5)
 
     def get_data(self, idx):
         img_path, bboxes = self.img_paths[idx], self.bboxes[idx]

@@ -24,6 +24,7 @@ from torch.utils.data import Dataset
 
 from yolo.tools.data_conversion import discretize_categories
 from yolo.tools.yolov9_augmentation import YOLOv9Augmentation
+from yolo.utils.annotation_utils import parse_coco_bbox, parse_yolo_label, polygon_area as _polygon_area
 
 
 BoxArray = np.ndarray
@@ -179,39 +180,11 @@ class YOLOv9Dataset(Dataset):
                 line = raw_line.strip()
                 if not line:
                     continue
-                try:
-                    values = np.asarray([float(value) for value in line.split()], dtype=np.float32)
-                except ValueError as error:
-                    raise ValueError(f"Non-numeric label at {label_path}:{line_number}") from error
-
-                location = f"{label_path}:{line_number}"
-                if values.size == 5:
-                    cls, xc, yc, width, height = values.tolist()
-                    self._validate_class(cls, location)
-                    _validate_normalized(np.asarray([xc, yc, width, height]), location)
-                    if width <= 0 or height <= 0:
-                        raise ValueError(f"Box width and height must be positive at {location}")
-                    # Match the reference parser: validate xywh itself, then
-                    # retain derived corners outside the image for the later
-                    # mosaic/affine clipping stage.
-                    x1, y1 = xc - width / 2, yc - height / 2
-                    x2, y2 = xc + width / 2, yc + height / 2
-                    boxes.append([cls, x1, y1, x2, y2])
-                    segments.append(_empty_segment())
-                elif values.size >= 7 and values.size % 2 == 1:
-                    cls = float(values[0])
-                    points = values[1:].reshape(-1, 2)
-                    self._validate_class(cls, location)
-                    _validate_normalized(points, location)
-                    if abs(_polygon_area(points)) <= 0:
-                        raise ValueError(f"Segmentation polygon has zero area at {location}")
-                    minimum, maximum = points.min(axis=0), points.max(axis=0)
-                    boxes.append([cls, minimum[0], minimum[1], maximum[0], maximum[1]])
-                    segments.append(points.astype(np.float32, copy=True))
-                else:
-                    raise ValueError(
-                        f"Expected 5 detection values or class plus at least 3 xy points at {location}"
-                    )
+                box, segment = parse_yolo_label(
+                    line.split(), f"{label_path}:{line_number}", self.class_num
+                )
+                boxes.append(box)
+                segments.append(segment)
 
         return _box_array(boxes), segments
 
@@ -271,36 +244,11 @@ class YOLOv9Dataset(Dataset):
         image_height: float,
         category_map: Dict[int, int] | None,
     ) -> Tuple[List[float], np.ndarray] | None:
-        bbox = annotation.get("bbox")
-        if not isinstance(bbox, Sequence) or isinstance(bbox, (str, bytes)) or len(bbox) != 4:
+        box = parse_coco_bbox(annotation, image_width, image_height, category_map, self.class_num)
+        if box is None:
             return None
-        bbox_array = np.asarray(bbox, dtype=np.float64)
-        if not np.isfinite(bbox_array).all() or bbox_array[2] <= 0 or bbox_array[3] <= 0:
-            return None
-
-        category_id = annotation.get("category_id")
-        if category_map is not None:
-            if category_id not in category_map:
-                raise ValueError(f"Unknown COCO category_id {category_id!r}")
-            cls = category_map[category_id]
-        else:
-            cls = category_id
-        self._validate_class(float(cls), f"COCO annotation {annotation.get('id', '<unknown>')}")
-
-        x, y, width, height = bbox_array
-        x1, y1 = np.clip([x / image_width, y / image_height], 0.0, 1.0)
-        x2, y2 = np.clip([(x + width) / image_width, (y + height) / image_height], 0.0, 1.0)
-        if x2 <= x1 or y2 <= y1:
-            return None
-
         segment = _merge_coco_polygons(annotation.get("segmentation"), image_width, image_height)
-        return [float(cls), float(x1), float(y1), float(x2), float(y2)], segment
-
-    def _validate_class(self, cls: float, location: str) -> None:
-        if not np.isfinite(cls) or cls < 0 or not float(cls).is_integer():
-            raise ValueError(f"Class must be a non-negative integer at {location}")
-        if self.class_num is not None and cls >= int(self.class_num):
-            raise ValueError(f"Class {int(cls)} exceeds class_num={self.class_num} at {location}")
+        return box, segment
 
 
 def _config_get(config: Any, key: str, default: Any) -> Any:
@@ -331,18 +279,6 @@ def _box_array(boxes: Sequence[Sequence[float]]) -> BoxArray:
 
 def _empty_segment() -> np.ndarray:
     return np.zeros((0, 2), dtype=np.float32)
-
-
-def _validate_normalized(values: np.ndarray, location: str) -> None:
-    if not np.isfinite(values).all():
-        raise ValueError(f"Coordinates must be finite at {location}")
-    if (values < 0).any() or (values > 1).any():
-        raise ValueError(f"Coordinates must be normalized to [0, 1] at {location}")
-
-
-def _polygon_area(points: np.ndarray) -> float:
-    x, y = points[:, 0], points[:, 1]
-    return float(0.5 * (np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))))
 
 
 def _merge_coco_polygons(segmentation: Any, width: float, height: float) -> np.ndarray:

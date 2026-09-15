@@ -24,7 +24,7 @@
 
 ## 평가 계약
 
-- 원본 JSON의 bbox, area, crowd 정보를 그대로 COCOeval에 전달한다. 리사이즈된 박스 면적으로 small/medium/large를 다시 분류하지 않는다.
+- 원본 JSON의 bbox, area, crowd 정보를 그대로 COCOeval에 전달한다. bbox 전용 JSON에서 `area` 또는 `iscrowd`를 생략한 경우에만 원본 bbox 면적과 `0`으로 보완한다. 리사이즈된 박스 면적으로 small/medium/large를 다시 분류하지 않는다. 입력 형식과 로딩 검증 규칙은 [bbox annotation 문서](bbox-annotations.md)를 참고한다.
 - 예측의 원본 좌표 복원은 현재 `PadAndResize`의 정수 크기 반올림 규칙과 padding을 역산한다. x/y에 실제 리사이즈된 크기 비율을 각각 사용하고 원본 경계로 clip한다. clip 후 면적이 0인 예측도 임의로 제거하지 않는다.
 - 모델의 연속 class index를 JSON category ID 정렬 순서로 매핑한다. 기존 JSON 학습 로더와 같은 매핑이며 COCO 80개 ID를 하드코딩하지 않는다.
 - image ID는 JSON의 file_name으로 찾는다. 비숫자 이름과 중첩 상대 경로를 지원한다. basename 대체는 유일할 때만 허용한다.

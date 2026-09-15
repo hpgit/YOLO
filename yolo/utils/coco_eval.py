@@ -78,6 +78,21 @@ class CocoJsonEvaluator:
         with contextlib.redirect_stdout(io.StringIO()):
             self._coco_gt = COCO(str(self.annotation_path))
 
+        # Minimal detection-only exports often omit these optional fields.
+        # Keep supplied COCO area/crowd values; derive only missing metadata in
+        # memory, without rewriting the user's annotations or inventing masks.
+        for annotation in self._coco_gt.dataset.get("annotations", []):
+            annotation.setdefault("iscrowd", 0)
+            if "area" not in annotation:
+                bbox = annotation.get("bbox")
+                if (
+                    not isinstance(bbox, (list, tuple)) or len(bbox) != 4
+                    or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in bbox)
+                    or bbox[2] <= 0 or bbox[3] <= 0
+                ):
+                    raise ValueError(f"Cannot derive area from bbox for COCO annotation {annotation.get('id')}")
+                annotation["area"] = bbox[2] * bbox[3]
+
         categories = self._coco_gt.dataset.get("categories", [])
         category_ids = [category["id"] for category in sorted(categories, key=lambda category: category["id"])]
         if len(category_ids) != len(set(category_ids)):

@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from yolo.tools.data_conversion import discretize_categories
+from yolo.utils.annotation_utils import parse_coco_bbox
 from yolo.utils.logger import logger
 
 
@@ -70,10 +71,12 @@ def organize_annotations_by_image(data: Dict[str, Any], id_to_idx: Optional[Dict
     """
     annotation_lookup = {}
     for anno in data["annotations"]:
-        if anno["iscrowd"]:
+        if anno.get("iscrowd", False):
             continue
         image_id = anno["image_id"]
         if id_to_idx:
+            if anno["category_id"] not in id_to_idx:
+                raise ValueError(f"Unknown COCO category_id {anno['category_id']!r} at COCO annotation {anno.get('id')}")
             anno["category_id"] = id_to_idx[anno["category_id"]]
         if image_id not in annotation_lookup:
             annotation_lookup[image_id] = []
@@ -99,13 +102,22 @@ def scale_segmentation(
 
     seg_array_with_cat = []
     h, w = image_dimensions["height"], image_dimensions["width"]
+    if not np.isfinite([w, h]).all() or w <= 0 or h <= 0:
+        raise ValueError(f"Invalid image dimensions for COCO image {image_dimensions.get('id')}")
     for anno in annotations:
         category_id = anno["category_id"]
-        if "segmentation" in anno:
-            seg_list = [item for sublist in anno["segmentation"] for item in sublist]
-        elif "bbox" in anno:
-            x, y, width, height = anno["bbox"]
-            seg_list = [x, y, x + width, y, x + width, y + height, x, y + height]
+        # Detection uses the authoritative bbox even if segmentation is empty,
+        # RLE, or has a different extent. This legacy API emits rectangle points.
+        if "bbox" in anno:
+            box = parse_coco_bbox(anno, w, h)
+            if box is not None:
+                cls, x1, y1, x2, y2 = box
+                seg_array_with_cat.append([cls, x1, y1, x2, y1, x2, y2, x1, y2])
+            continue
+        segmentation = anno.get("segmentation")
+        if not isinstance(segmentation, list) or not segmentation:
+            continue
+        seg_list = list(chain.from_iterable(segmentation)) if isinstance(segmentation[0], list) else segmentation
 
         scaled_seg_data = (
             np.array(seg_list).reshape(-1, 2) / [w, h]
