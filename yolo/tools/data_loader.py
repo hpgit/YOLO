@@ -21,6 +21,7 @@ from yolo.utils.annotation_utils import parse_yolo_label
 from yolo.utils.dataset_utils import (
     create_image_metadata,
     locate_label_paths,
+    normalize_dataset_inputs,
     scale_segmentation,
     tensorlize,
 )
@@ -31,7 +32,7 @@ class YoloDataset(Dataset):
     def __init__(self, data_cfg: DataConfig, dataset_cfg: DatasetConfig, phase: str = "train2017"):
         augment_cfg = data_cfg.data_augment
         self.image_size = data_cfg.image_size
-        phase_name = dataset_cfg.get(phase, phase)
+        phase_names = normalize_dataset_inputs(dataset_cfg.get(phase, phase), phase)
         self.batch_size = data_cfg.batch_size
         self.dynamic_shape = getattr(data_cfg, "dynamic_shape", False)
         self.class_num = dataset_cfg.get("class_num", None)
@@ -40,7 +41,15 @@ class YoloDataset(Dataset):
         transforms = [eval(aug)(prob) for aug, prob in augment_cfg.items()]
         self.transform = AugmentationComposer(transforms, self.image_size, self.base_size)
         self.transform.get_more_data = self.get_more_data
-        self.img_paths, self.bboxes, self.ratios = tensorlize(self.load_data(Path(dataset_cfg.path), phase_name))
+        data = []
+        for phase_name in phase_names:
+            data.extend(self.load_data(Path(dataset_cfg.path), phase_name))
+        # Rectangular batches must be sorted across all inputs, not per split.
+        if self.dynamic_shape:
+            data.sort(key=lambda sample: sample[2], reverse=True)
+        if not data:
+            raise ValueError(f"No images found for dataset.{phase}: {phase_names}")
+        self.img_paths, self.bboxes, self.ratios = tensorlize(data)
 
     def load_data(self, dataset_path: Path, phase_name: str):
         """

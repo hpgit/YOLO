@@ -22,6 +22,43 @@ The input arguments are:
 Train and Validation
 ----------------------------
 
+Multiple dataset inputs
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``train`` and ``validation`` accept either one split name or a non-empty list
+of split names under the shared ``path``:
+
+.. code-block:: yaml
+
+   path: data/custom
+   train: [train_a, train_b]
+   validation: [val_a, val_b]
+   class_num: 2
+   class_list: [person, dog]
+   auto_download: null
+
+Each entry uses the existing split layout: ``<path>/<split>.txt`` (an image
+list, with paths relative to ``path`` or absolute), or
+``<path>/images/<split>`` with ``<path>/labels/<split>`` or
+``<path>/annotations/instances_<split>.json``. The entries themselves are
+split names, not arbitrary image-directory or TXT-file paths.
+
+Inputs are concatenated in configured order before training shuffle. All
+inputs must share the same class numbering. Repeated inputs/images are kept;
+avoid overlapping validation splits. Both legacy and YOLOv9 augmentation
+sample from the combined dataset. Legacy rectangular batches are sorted by
+aspect ratio across all inputs, and legacy caches remain separate per split.
+Existing single-string configurations continue to work.
+
+With ``evaluator: auto``, validation uses a combined COCO evaluator when every
+input uses COCO JSON. Image and annotation IDs are remapped in memory, and
+category IDs and names must match across JSON files. If any input uses TXT,
+the combined loader targets are evaluated with TorchMetrics. Metrics cover
+the combined dataset; they are not averages of per-split AP values. An explicit
+``annotation_path`` still selects one authoritative JSON; for multiple inputs,
+its filenames should include the split directory relative to ``<path>/images``
+or be absolute.
+
 Dataloader Return Type
 ~~~~~~~~~~~~~~~~~~~~~
 

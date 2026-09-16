@@ -25,6 +25,7 @@ from torch.utils.data import Dataset
 from yolo.tools.data_conversion import discretize_categories
 from yolo.tools.yolov9_augmentation import YOLOv9Augmentation
 from yolo.utils.annotation_utils import parse_coco_bbox, parse_yolo_label, polygon_area as _polygon_area
+from yolo.utils.dataset_utils import normalize_dataset_inputs
 
 
 BoxArray = np.ndarray
@@ -52,7 +53,7 @@ class YOLOv9Dataset(Dataset):
             raise ValueError("YOLOv9 augmentation requires a fixed image_size; dynamic_shape is not supported")
 
         self.dataset_path = Path(_config_get(dataset_cfg, "path", ""))
-        self.phase_name = _config_get(dataset_cfg, phase, phase)
+        phase_names = normalize_dataset_inputs(_config_get(dataset_cfg, phase, phase), phase)
         self.class_num = _config_get(dataset_cfg, "class_num", None)
 
         augment_cfg = _config_get(data_cfg.data_augment, "YOLOv9", None)
@@ -60,16 +61,27 @@ class YOLOv9Dataset(Dataset):
             raise ValueError("data_augment.YOLOv9 is required for YOLOv9Dataset")
         self.transform = YOLOv9Augmentation(self.image_size, **dict(augment_cfg))
 
+        self.img_paths, self.bboxes, self.segments = [], [], []
+        for phase_name in phase_names:
+            paths, boxes, segments = self._load_phase(phase_name)
+            self.img_paths.extend(paths)
+            self.bboxes.extend(boxes)
+            self.segments.extend(segments)
+        if not self.img_paths:
+            raise ValueError(f"No images found for dataset.{phase}: {phase_names}")
+
+    def _load_phase(self, phase_name: str):
+        self.phase_name = phase_name
         split_path = self.dataset_path / f"{self.phase_name}.txt"
         if split_path.is_file():
-            self.img_paths, self.bboxes, self.segments = self._load_txt_split(split_path)
+            return self._load_txt_split(split_path)
         else:
             annotation_path = self.dataset_path / "annotations" / f"instances_{self.phase_name}.json"
             images_path = self.dataset_path / "images" / str(self.phase_name)
             if annotation_path.is_file():
-                self.img_paths, self.bboxes, self.segments = self._load_coco_json(annotation_path)
+                return self._load_coco_json(annotation_path)
             elif images_path.is_dir():
-                self.img_paths, self.bboxes, self.segments = self._load_txt_directory(images_path)
+                return self._load_txt_directory(images_path)
             else:
                 raise FileNotFoundError(
                     f"Expected an explicit split file at '{split_path}' or COCO annotations at "

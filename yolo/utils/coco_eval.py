@@ -8,6 +8,7 @@ through :attr:`predictions` (or :meth:`export`) without writing temporary files.
 import contextlib
 import copy
 import io
+import json
 import math
 import os
 from collections import OrderedDict, defaultdict
@@ -54,9 +55,11 @@ class CocoJsonEvaluator:
     """Accumulate detections and evaluate them against an official COCO JSON.
 
     Args:
-        annotation_path: Path to a COCO instances annotation JSON file.
+        annotation_path: Path to a COCO instances annotation JSON file, or a
+            list of files with identical category IDs/names to evaluate jointly.
         image_root: Optional directory against which annotation ``file_name``
-            entries and incoming image paths are resolved.
+            entries and incoming image paths are resolved. For multiple JSON
+            files, supply one root per file; IDs are remapped in memory.
 
     ``update`` expects one tensor per image with rows ordered as
     ``[contiguous_class, x1, y1, x2, y2, score]``.  Coordinates are in the
@@ -67,16 +70,52 @@ class CocoJsonEvaluator:
 
     def __init__(
         self,
-        annotation_path: Union[str, os.PathLike],
-        image_root: Optional[Union[str, os.PathLike]] = None,
+        annotation_path: Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]],
+        image_root: Optional[Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]]] = None,
     ):
-        self.annotation_path = Path(annotation_path)
-        if not self.annotation_path.is_file():
-            raise FileNotFoundError("COCO annotation file does not exist: {}".format(self.annotation_path))
+        if isinstance(annotation_path, (list, tuple)):
+            self.annotation_path = [Path(path) for path in annotation_path]
+            if not isinstance(image_root, (list, tuple)) or len(image_root) != len(self.annotation_path):
+                raise ValueError("Multiple COCO annotations require one image_root per input")
+            # Use absolute filenames and fresh IDs so independent exports may
+            # safely reuse image basenames and annotation/image IDs.
+            self.image_root = Path.cwd()
+            merged = {"images": [], "annotations": [], "categories": []}
+            expected_categories = None
+            for path, root in zip(self.annotation_path, image_root):
+                with path.open(encoding="utf-8") as source:
+                    data = json.load(source)
+                categories = sorted(data.get("categories", []), key=lambda category: category["id"])
+                signature = [(category["id"], category.get("name")) for category in categories]
+                if expected_categories is not None and signature != expected_categories:
+                    raise ValueError("Multiple COCO inputs must use the same category IDs and names")
+                expected_categories = signature
+                merged["categories"] = categories
+                image_ids = {}
+                for image in data.get("images", []):
+                    old_id = image["id"]
+                    if old_id in image_ids:
+                        raise ValueError(f"COCO annotation contains duplicate image ID {old_id!r}: {path}")
+                    image_ids[old_id] = len(merged["images"]) + 1
+                    merged["images"].append(dict(
+                        image, id=image_ids[old_id], file_name=str((Path(root) / image["file_name"]).resolve())
+                    ))
+                for annotation in data.get("annotations", []):
+                    merged["annotations"].append(dict(
+                        annotation, id=len(merged["annotations"]) + 1, image_id=image_ids[annotation["image_id"]]
+                    ))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self._coco_gt = COCO()
+                self._coco_gt.dataset = merged
+                self._coco_gt.createIndex()
+        else:
+            self.annotation_path = Path(annotation_path)
+            if not self.annotation_path.is_file():
+                raise FileNotFoundError("COCO annotation file does not exist: {}".format(self.annotation_path))
 
-        self.image_root = Path(image_root).resolve() if image_root is not None else None
-        with contextlib.redirect_stdout(io.StringIO()):
-            self._coco_gt = COCO(str(self.annotation_path))
+            self.image_root = Path(image_root).resolve() if image_root is not None else None
+            with contextlib.redirect_stdout(io.StringIO()):
+                self._coco_gt = COCO(str(self.annotation_path))
 
         # Minimal detection-only exports often omit these optional fields.
         # Keep supplied COCO area/crowd values; derive only missing metadata in

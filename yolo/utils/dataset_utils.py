@@ -6,10 +6,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from omegaconf import ListConfig
 
 from yolo.tools.data_conversion import discretize_categories
 from yolo.utils.annotation_utils import parse_coco_bbox
 from yolo.utils.logger import logger
+
+
+def normalize_dataset_inputs(value, phase: str) -> List[str]:
+    """Accept a split name or a non-empty YAML/Python list of split names."""
+    inputs = [value] if isinstance(value, str) else value
+    if not isinstance(inputs, (list, tuple, ListConfig)) or not inputs:
+        raise ValueError(f"dataset.{phase} must be a string or a non-empty list of strings")
+    if any(not isinstance(item, str) or not item.strip() for item in inputs):
+        raise ValueError(f"dataset.{phase} must contain only non-empty strings")
+    return list(inputs)
 
 
 def locate_label_paths(dataset_path: Path, phase_name: Path) -> Tuple[Path, Path]:

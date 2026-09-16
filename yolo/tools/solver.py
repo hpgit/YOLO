@@ -11,6 +11,7 @@ from yolo.tools.drawer import draw_bboxes
 from yolo.tools.loss_functions import create_loss_function
 from yolo.utils.bounding_box_utils import create_converter, to_metrics_format
 from yolo.utils.coco_eval import CocoJsonEvaluator
+from yolo.utils.dataset_utils import normalize_dataset_inputs
 from yolo.utils.logger import logger
 from yolo.utils.model_utils import PostProcess, create_optimizer, create_scheduler
 
@@ -21,24 +22,31 @@ def create_validation_metric(validation_cfg, dataset_cfg):
     if backend not in {"auto", "coco", "torchmetrics"}:
         raise ValueError(f"Unknown validation evaluator: {backend!r}")
     dataset_root = Path(dataset_cfg.path)
-    phase = dataset_cfg.get(validation_cfg.task, validation_cfg.task)
+    phases = normalize_dataset_inputs(dataset_cfg.get(validation_cfg.task, validation_cfg.task), validation_cfg.task)
     configured_path = getattr(validation_cfg, "annotation_path", None)
-    annotation_path = Path(configured_path) if configured_path else Path("annotations") / f"instances_{phase}.json"
-    if not annotation_path.is_absolute():
-        annotation_path = dataset_root / annotation_path
+    annotation_paths = [Path(configured_path)] if configured_path else [
+        Path("annotations") / f"instances_{phase}.json" for phase in phases
+    ]
+    annotation_paths = [path if path.is_absolute() else dataset_root / path for path in annotation_paths]
     # The loader gives an explicit split TXT list precedence over JSON labels.
     # Match that in auto mode; an explicit JSON request makes JSON authoritative.
-    split_txt = (dataset_root / f"{phase}.txt").is_file()
+    split_txt = any((dataset_root / f"{phase}.txt").is_file() for phase in phases)
     use_json = backend == "coco" or (
-        backend == "auto" and (configured_path or (annotation_path.is_file() and not split_txt))
+        backend == "auto" and (configured_path or (all(path.is_file() for path in annotation_paths) and not split_txt))
     )
     if use_json:
         if validation_cfg.data.data_augment:
             raise ValueError("COCO JSON evaluation requires data_augment={} (PadAndResize only).")
-        metric = CocoJsonEvaluator(annotation_path, image_root=dataset_root / "images" / phase)
+        if configured_path or len(phases) == 1:
+            image_root = dataset_root / "images"
+            if len(phases) == 1:
+                image_root /= phases[0]
+            metric = CocoJsonEvaluator(annotation_paths[0], image_root=image_root)
+        else:
+            metric = CocoJsonEvaluator(annotation_paths, image_root=[dataset_root / "images" / phase for phase in phases])
         if len(metric.coco_gt.getCatIds()) != dataset_cfg.class_num:
             raise ValueError("Annotation category count must match dataset.class_num for COCO evaluation.")
-        logger.info(f"COCO JSON evaluation: {annotation_path}")
+        logger.info(f"COCO JSON evaluation: {annotation_paths}")
         return metric
     metric = MeanAveragePrecision(iou_type="bbox", box_format="xyxy", backend="faster_coco_eval")
     metric.warn_on_many_detections = False

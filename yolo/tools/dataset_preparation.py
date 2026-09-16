@@ -6,6 +6,7 @@ import requests
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 
 from yolo.config.config import DatasetConfig
+from yolo.utils.dataset_utils import normalize_dataset_inputs
 from yolo.utils.logger import logger
 
 
@@ -58,10 +59,11 @@ def prepare_dataset(dataset_cfg: DatasetConfig, task: str):
     """
     # TODO: do EDA of dataset
     data_dir = Path(dataset_cfg.path)
+    phase_names = normalize_dataset_inputs(dataset_cfg.get(task, task), task)
     for data_type, settings in dataset_cfg.auto_download.items():
         base_url = settings["base_url"]
         for dataset_type, dataset_args in settings.items():
-            if dataset_type != "annotations" and dataset_cfg.get(task, task) != dataset_type:
+            if dataset_type == "base_url" or (dataset_type != "annotations" and dataset_type not in phase_names):
                 continue
             file_name = f"{dataset_args.get('file_name', dataset_type)}.zip"
             url = f"{base_url}{file_name}"

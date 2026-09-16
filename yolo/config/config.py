@@ -48,6 +48,8 @@ class DatasetConfig:
     class_num: int
     class_list: List[str]
     auto_download: Optional[DownloadOptions]
+    train: Union[str, List[str]] = "train"
+    validation: Union[str, List[str]] = "validation"
 
 
 @dataclass
