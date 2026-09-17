@@ -14,16 +14,20 @@ from yolo.utils.coco_eval import CocoJsonEvaluator
 from yolo.utils.dataset_utils import normalize_dataset_inputs
 from yolo.utils.logger import logger
 from yolo.utils.model_utils import PostProcess, create_optimizer, create_scheduler
+from yolo.utils.parquet_utils import parquet_split_name, resolve_parquet_annotation
 
 
 def create_validation_metric(validation_cfg, dataset_cfg):
-    """Prefer authoritative annotation JSON; retain tensor metrics for TXT datasets."""
+    """Prefer authoritative JSON; use tensor metrics for TXT/Parquet targets."""
     backend = getattr(validation_cfg, "evaluator", "auto")
     if backend not in {"auto", "coco", "torchmetrics"}:
         raise ValueError(f"Unknown validation evaluator: {backend!r}")
     dataset_root = Path(dataset_cfg.path)
     phases = normalize_dataset_inputs(dataset_cfg.get(validation_cfg.task, validation_cfg.task), validation_cfg.task)
     configured_path = getattr(validation_cfg, "annotation_path", None)
+    has_parquet = any(resolve_parquet_annotation(dataset_root, phase) is not None for phase in phases)
+    if has_parquet and backend == "coco" and not configured_path:
+        raise ValueError("Parquet validation requires evaluator=auto or torchmetrics, or an explicit COCO annotation_path")
     annotation_paths = [Path(configured_path)] if configured_path else [
         Path("annotations") / f"instances_{phase}.json" for phase in phases
     ]
@@ -32,7 +36,9 @@ def create_validation_metric(validation_cfg, dataset_cfg):
     # Match that in auto mode; an explicit JSON request makes JSON authoritative.
     split_txt = any((dataset_root / f"{phase}.txt").is_file() for phase in phases)
     use_json = backend == "coco" or (
-        backend == "auto" and (configured_path or (all(path.is_file() for path in annotation_paths) and not split_txt))
+        backend == "auto" and (
+            configured_path or (not has_parquet and all(path.is_file() for path in annotation_paths) and not split_txt)
+        )
     )
     if use_json:
         if validation_cfg.data.data_augment:
@@ -40,7 +46,7 @@ def create_validation_metric(validation_cfg, dataset_cfg):
         if configured_path or len(phases) == 1:
             image_root = dataset_root / "images"
             if len(phases) == 1:
-                image_root /= phases[0]
+                image_root /= parquet_split_name(phases[0]) if has_parquet else phases[0]
             metric = CocoJsonEvaluator(annotation_paths[0], image_root=image_root)
         else:
             metric = CocoJsonEvaluator(annotation_paths, image_root=[dataset_root / "images" / phase for phase in phases])

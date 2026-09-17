@@ -33,6 +33,16 @@ def _write_dataset(root, source="txt", annotation_extra=None):
             (labels / f"{index}.txt").write_text("\n0 0.375 0.5 0.5 0.5\n\n")
         if source == "split":
             (root / "sample.txt").write_text("\nimages/sample/0.png\nimages/sample/1.png\n")
+    elif source == "parquet":
+        import pandas as pd
+
+        annotations = root / "annotations"
+        annotations.mkdir()
+        pd.DataFrame([
+            dict(image=f"images/sample/{index}.png", conf=.9, id_class=0,
+                 box_cx=.375, box_cy=.5, box_w=.5, box_h=.5)
+            for index in range(2)
+        ]).to_parquet(annotations / "instances_sample.parquet")
     else:
         annotations = root / "annotations"
         annotations.mkdir()
@@ -54,7 +64,7 @@ def _configs(root, reference=False):
     return data, dataset
 
 
-@pytest.mark.parametrize("source", ["txt", "split", "json"])
+@pytest.mark.parametrize("source", ["txt", "split", "json", "parquet"])
 @pytest.mark.parametrize("reference", [False, True])
 def test_bbox_only_coordinates_survive_train_and_validation(tmp_path, source, reference):
     _write_dataset(tmp_path, source)
@@ -201,7 +211,7 @@ def test_bbox_only_coco_defaults_preserve_supplied_metadata_and_source(tmp_path)
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("source", ["txt", "json"])
+@pytest.mark.parametrize("source", ["txt", "json", "parquet"])
 @pytest.mark.parametrize("reference", [False, True])
 def test_bbox_only_real_training_and_standalone_validation(tmp_path, source, reference):
     _write_dataset(tmp_path, source)

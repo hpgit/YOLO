@@ -3,7 +3,7 @@
 This loader deliberately does not consume the legacy ``.pache`` files.  Those
 files only retain bounding boxes, so using them would silently turn every
 segmentation into box-only data and disable meaningful copy-paste.  Labels are
-parsed from authoritative JSON or per-image TXT files when the dataset object
+parsed from authoritative JSON, Parquet, or per-image TXT files when the dataset object
 is created.  This adds a small startup cost in exchange for keeping boxes and
 polygon contours aligned.
 """
@@ -26,6 +26,12 @@ from yolo.tools.data_conversion import discretize_categories
 from yolo.tools.yolov9_augmentation import YOLOv9Augmentation
 from yolo.utils.annotation_utils import parse_coco_bbox, parse_yolo_label, polygon_area as _polygon_area
 from yolo.utils.dataset_utils import normalize_dataset_inputs
+from yolo.utils.parquet_utils import (
+    load_parquet_annotations,
+    parquet_split_name,
+    resolve_annotation_image_path,
+    resolve_parquet_annotation,
+)
 
 
 BoxArray = np.ndarray
@@ -72,6 +78,15 @@ class YOLOv9Dataset(Dataset):
 
     def _load_phase(self, phase_name: str):
         self.phase_name = phase_name
+        parquet_path = resolve_parquet_annotation(self.dataset_path, phase_name)
+        if parquet_path is not None:
+            samples = load_parquet_annotations(
+                parquet_path, self.dataset_path, self.class_num, split=parquet_split_name(phase_name),
+            )
+            paths, boxes = zip(*samples)
+            # Pseudo boxes do not contain real contours for Copy-Paste.
+            segments = [[np.zeros((0, 2), dtype=np.float32) for _ in image_boxes] for image_boxes in boxes]
+            return list(paths), list(boxes), segments
         split_path = self.dataset_path / f"{self.phase_name}.txt"
         if split_path.is_file():
             return self._load_txt_split(split_path)
@@ -239,15 +254,7 @@ class YOLOv9Dataset(Dataset):
         return _sort_samples(img_paths, boxes_per_image, segments_per_image)
 
     def _resolve_json_image_path(self, file_name: str) -> Path:
-        source = Path(file_name)
-        if source.is_absolute():
-            return source
-        candidates = (
-            self.dataset_path / "images" / str(self.phase_name) / source,
-            self.dataset_path / "images" / source,
-            self.dataset_path / source,
-        )
-        return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+        return resolve_annotation_image_path(self.dataset_path, str(self.phase_name), file_name)
 
     def _parse_coco_annotation(
         self,

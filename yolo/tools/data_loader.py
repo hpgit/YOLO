@@ -26,6 +26,11 @@ from yolo.utils.dataset_utils import (
     tensorlize,
 )
 from yolo.utils.logger import logger
+from yolo.utils.parquet_utils import (
+    load_parquet_annotations,
+    parquet_split_name,
+    resolve_parquet_annotation,
+)
 
 
 class YoloDataset(Dataset):
@@ -36,6 +41,7 @@ class YoloDataset(Dataset):
         self.batch_size = data_cfg.batch_size
         self.dynamic_shape = getattr(data_cfg, "dynamic_shape", False)
         self.class_num = dataset_cfg.get("class_num", None)
+        self.has_parquet = False
         self.base_size = mean(self.image_size)
 
         transforms = [eval(aug)(prob) for aug, prob in augment_cfg.items()]
@@ -62,6 +68,24 @@ class YoloDataset(Dataset):
         Returns:
             dict: The loaded data from the cache for the specified phase.
         """
+        parquet_path = resolve_parquet_annotation(dataset_path, phase_name)
+        if parquet_path is not None:
+            self.has_parquet = True
+            # Parquet is already a compact annotation store. Read it afresh so
+            # replaced pseudo-labels cannot be hidden by an old .pache cache.
+            data = []
+            for image_path, boxes in load_parquet_annotations(
+                parquet_path, dataset_path, self.class_num, split=parquet_split_name(phase_name),
+            ):
+                boxes[:, 1:] = np.clip(boxes[:, 1:], 0.0, 1.0)
+                if self.dynamic_shape:
+                    with Image.open(image_path) as image:
+                        width, height = image.size
+                else:
+                    width, height = 0, 1
+                data.append((image_path, torch.from_numpy(boxes), width / height))
+            return data
+
         cache_path = dataset_path / f"{phase_name}.pache"
 
         # Old list-only caches may contain detection rows parsed as polygons.
@@ -265,8 +289,12 @@ def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: st
         generator=torch.Generator().manual_seed(torch.initial_seed()),
         # Also seed augmentation RNGs when iterating without a Lightning Trainer.
         worker_init_fn=pl_worker_init_function,
-        # Mosaic/MixUp can produce over 100 labels; preserve every target.
-        collate_fn=partial(collate_fn, max_boxes=None) if reference_recipe else collate_fn,
+        # Mosaic/MixUp and pseudo-label tables can contain over 100 boxes.
+        collate_fn=(
+            partial(collate_fn, max_boxes=None)
+            if reference_recipe or getattr(dataset, "has_parquet", False)
+            else collate_fn
+        ),
     )
 
 

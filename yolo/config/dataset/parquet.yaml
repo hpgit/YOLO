@@ -1,0 +1,7 @@
+# id_class is the zero-based index in class_list: person=0, dog=1.
+path: data/custom
+train: train
+validation: val
+class_num: 2
+class_list: [person, dog]
+auto_download: null

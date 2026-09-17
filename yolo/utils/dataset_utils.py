@@ -14,7 +14,7 @@ from yolo.utils.logger import logger
 
 
 def normalize_dataset_inputs(value, phase: str) -> List[str]:
-    """Accept a split name or a non-empty YAML/Python list of split names."""
+    """Accept a split name/Parquet path or a non-empty YAML/Python list of inputs."""
     inputs = [value] if isinstance(value, str) else value
     if not isinstance(inputs, (list, tuple, ListConfig)) or not inputs:
         raise ValueError(f"dataset.{phase} must be a string or a non-empty list of strings")

@@ -41,7 +41,8 @@ Each entry uses the existing split layout: ``<path>/<split>.txt`` (an image
 list, with paths relative to ``path`` or absolute), or
 ``<path>/images/<split>`` with ``<path>/labels/<split>`` or
 ``<path>/annotations/instances_<split>.json``. The entries themselves are
-split names, not arbitrary image-directory or TXT-file paths.
+split names or explicit Parquet annotation paths, not arbitrary
+image-directory or TXT-file paths.
 
 Inputs are concatenated in configured order before training shuffle. All
 inputs must share the same class numbering. Repeated inputs/images are kept;
@@ -52,12 +53,85 @@ Existing single-string configurations continue to work.
 
 With ``evaluator: auto``, validation uses a combined COCO evaluator when every
 input uses COCO JSON. Image and annotation IDs are remapped in memory, and
-category IDs and names must match across JSON files. If any input uses TXT,
+category IDs and names must match across JSON files. If any input uses TXT or Parquet,
 the combined loader targets are evaluated with TorchMetrics. Metrics cover
 the combined dataset; they are not averages of per-split AP values. An explicit
 ``annotation_path`` still selects one authoritative JSON; for multiple inputs,
 its filenames should include the split directory relative to ``<path>/images``
 or be absolute.
+
+Parquet pseudo-label annotations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Pandas DataFrames saved with ``df.to_parquet(...)`` are supported by both the
+legacy and YOLOv9 loaders. Install the updated ``requirements.txt``, which
+includes ``pandas`` and ``pyarrow``. Each row describes one box using these
+columns (column order and the pandas index do not matter):
+
+.. code-block:: text
+
+   image, conf, id_class, box_cx, box_cy, box_w, box_h
+
+``id_class`` is the zero-based index in the configured ``class_list``.
+No category-ID remapping is performed:
+
+.. code-block:: yaml
+
+   path: data/custom
+   train: [annotations/instances_train_a.parquet, train_b]
+   validation: annotations/instances_val.parquet
+   class_num: 2
+   class_list: [person, dog]
+   auto_download: null
+
+Here ID 0 means person and ID 1 means dog. IDs must be integers in
+``[0, class_num - 1]``; unknown or fractional indices are errors, not silently
+discarded rows. Every Parquet input uses the same model class order. Ensure
+that TXT and COCO JSON inputs have the same resulting order when mixing formats.
+
+A ``dataset=parquet`` example config is included. All values can be overridden
+through the CLI:
+
+.. code-block:: bash
+
+   .venv/bin/python yolo/lazy.py task=train dataset=parquet \
+     dataset.path=/data/custom \
+     'dataset.train=[annotations/instances_train_a.parquet,train_b]' \
+     dataset.validation=annotations/instances_val.parquet \
+     dataset.class_num=2 'dataset.class_list=[person,dog]'
+
+``image`` is an image path. Rows for the same resolved image path are grouped
+into one sample, retaining every box. ``conf`` is ignored: no threshold or
+loss weighting is applied. Box centers and sizes must be finite and normalized
+to [0, 1], with positive width and height. Derived corners may extend outside
+the image and follow the existing TXT bbox clipping rules. No polygons are
+invented for Copy-Paste.
+
+Parquet files can be supplied as absolute paths or paths relative to
+``dataset.path`` in ``train`` and ``validation``, including lists mixed with
+existing split names. With a split name such as ``train_a``, the conventional
+file is ``annotations/instances_train_a.parquet``. Existing ``train_a.txt``
+and ``annotations/instances_train_a.json`` take precedence over automatic
+Parquet discovery; an explicit ``.parquet`` path always selects that file.
+
+Image lookup follows the COCO JSON loader. Absolute image paths are used
+directly; relative image paths are tried in this order:
+
+#. ``<dataset.path>/images/<split>/<image>``
+#. ``<dataset.path>/images/<image>``
+#. ``<dataset.path>/<image>``
+
+For an explicit Parquet file, ``instances_train_a.parquet`` implies split
+``train_a``; ``train_a.parquet`` does too. This also permits COCO-style bare
+filenames as well as split-prefixed and dataset-relative image paths.
+
+Only images represented by rows are included; an image with no rows is not
+automatically added as a background sample. Missing files, missing columns,
+invalid classes/boxes, and empty Parquet files produce errors. Parquet inputs
+are read on each dataset construction, bypassing legacy ``.pache`` caches so
+updated pseudo-labels are used immediately. Validation defaults to TorchMetrics
+on the loaded targets. An explicit ``evaluator: coco`` requires a separate
+COCO ``annotation_path`` when Parquet inputs are selected.
 
 Dataloader Return Type
 ~~~~~~~~~~~~~~~~~~~~~

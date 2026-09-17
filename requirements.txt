@@ -7,7 +7,9 @@ lightning
 loguru
 numpy
 opencv-python-headless
+pandas
 Pillow
+pyarrow
 pycocotools
 requests
 rich
