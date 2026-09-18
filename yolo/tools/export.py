@@ -1,4 +1,4 @@
-"""Export detection models with one decoded, pre-NMS output tensor."""
+"""Export detection models with one pre-NMS output and rank <= 4 tensors."""
 
 from copy import deepcopy
 from pathlib import Path
@@ -32,27 +32,53 @@ class ExportAnchor2Vec(nn.Module):
         return logits, vector
 
 
+class ExportAnchorProbabilities(nn.Module):
+    """DFL probabilities, grouped by L/T/R/B, without rank-5 tensors or projection."""
+
+    def __init__(self, source: Anchor2Vec):
+        super().__init__()
+        self.reg_max = source.anc2vec.in_channels
+
+    def forward(self, anchor_x):
+        batch, _, height, width = anchor_x.shape
+        logits = anchor_x.reshape(batch, 4, self.reg_max, height * width)
+        # [B, H*W, 4, R]: normalize each direction over its own bins.
+        probabilities = logits.permute(0, 3, 1, 2).softmax(dim=-1)
+        return logits, probabilities.flatten(2)
+
+
 class ExportModel(nn.Module):
-    """NCHW RGB input -> [B, N, 4 + classes], pixel xyxy and class scores.
+    """NCHW RGB input -> one tensor containing Main detections.
+
+    With probabilities=True, DFL heads return [B, N, 4*reg_max + classes]:
+    L/T/R/B softmax distributions followed by sigmoid class scores. Otherwise
+    return decoded [B, N, 4 + classes], pixel xyxy followed by class scores.
+    Anchor-based YOLOv7 heads always use the decoded contract.
 
     Only Main detections are exported. No confidence filtering, top-k, NMS,
     clipping or inverse letterbox transform is performed.
     """
 
-    def __init__(self, model, anchor_cfg, image_size, model_name):
+    def __init__(self, model, anchor_cfg, image_size, model_name, *, probabilities=False):
         super().__init__()
         self.model = deepcopy(model).cpu().float().eval()
         main = next((layer for layer in self.model.model if layer.tags == "Main" and layer.output), None)
         if type(main) is not MultiheadDetection:
             raise ValueError("Export requires a detection model with a Main MultiheadDetection output.")
+        self.probabilities = probabilities and all(
+            isinstance(getattr(head, "anc2vec", None), Anchor2Vec) for head in main.heads
+        )
+        self.class_num = model.num_classes
         for module in list(self.model.modules()):
             for name, child in list(module.named_children()):
                 if isinstance(child, Anchor2Vec):
-                    setattr(module, name, ExportAnchor2Vec(child))
+                    replacement = ExportAnchorProbabilities(child) if self.probabilities else ExportAnchor2Vec(child)
+                    setattr(module, name, replacement)
+        if self.probabilities:
+            return
         with torch.no_grad():
             converter = create_converter(model_name, self.model, anchor_cfg, image_size, torch.device("cpu"))
         self.anchor_based = isinstance(converter, Anc2Box)
-        self.class_num = model.num_classes
         if self.anchor_based:
             self.anchor_num = converter.anchor_num
             self.strides = tuple(converter.strides)
@@ -65,6 +91,11 @@ class ExportModel(nn.Module):
 
     def forward(self, images):
         predictions = self.model(images, shortcut="Main")["Main"]
+        if self.probabilities:
+            return torch.cat(
+                [torch.cat((head[2], head[0].flatten(2).transpose(1, 2).sigmoid()), dim=-1) for head in predictions],
+                dim=1,
+            )
         if self.anchor_based:
             outputs = []
             for index, prediction in enumerate(predictions):
@@ -162,7 +193,9 @@ def export_model(cfg: Config) -> Path:
     if output.exists() and not cfg.exist_ok:
         raise FileExistsError(output)
     model = create_model(deepcopy(cfg.model), class_num=cfg.dataset.class_num, weight_path=cfg.weight)
-    wrapper = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name).eval()
+    wrapper = ExportModel(
+        model, cfg.model.anchor, list(cfg.image_size), cfg.model.name, probabilities=task.format == "onnx"
+    ).eval()
     width, height = cfg.image_size
     sample = torch.zeros(task.batch_size, 3, height, width)
     with torch.no_grad():
@@ -186,5 +219,6 @@ def export_model(cfg: Config) -> Path:
     else:
         edge_model = litert_torch.convert(wrapper, (sample,))
         edge_model.export(str(output))
-    logger.info(f"Exported {output}: input {tuple(sample.shape)}, output {output_shape} (xyxy + class scores, no NMS)")
+    contract = "L/T/R/B softmax + class sigmoid" if wrapper.probabilities else "xyxy + class scores"
+    logger.info(f"Exported {output}: input {tuple(sample.shape)}, output {output_shape} ({contract}, no NMS)")
     return output

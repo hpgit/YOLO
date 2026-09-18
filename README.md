@@ -122,18 +122,25 @@ pip install -e '.[export-tflite]'
 python yolo/lazy.py task=export task.format=tflite model=v9-c weight=weights/v9-c.pt
 ```
 
-Both formats have one float32 output: `[batch_size, num_boxes, 4 + num_classes]`.
-Each row contains `[x1, y1, x2, y2, class_0_score, ...]` before NMS or confidence
-filtering. Coordinates use input-image pixels; YOLOv9 scores are sigmoid class
-probabilities, and YOLOv7 scores include objectness. Auxiliary outputs are excluded.
-Export uses rank-4 DFL decoding; internal ONNX tensors, constants, and weights
-are checked to have at most four dimensions. Training and checkpoint formats are unchanged.
+YOLOv9 ONNX has one float32 output: `[batch_size, num_candidates, 4 * reg_max + num_classes]`.
+Each row contains four Softmax distributions first, then sigmoid class probabilities:
+`[left_bins..., top_bins..., right_bins..., bottom_bins..., class_0, ..., class_C-1]`.
+Softmax normalizes each direction's `reg_max` bins independently. The application
+computes DFL expectation and decodes coordinates; this output contains no decoded boxes.
+This replaces the previous YOLOv9 ONNX `[B,N,4+C]` contract, so update consumers when re-exporting.
+
+TFLite and YOLOv7 ONNX retain decoded `[B,N,4+C]` output:
+`[x1, y1, x2, y2, class_0_score, ...]` in input-image pixels. YOLOv7 scores include objectness.
+All exports exclude auxiliary outputs, NMS and confidence filtering. Internal ONNX
+tensors, constants, and weights are checked to have at most four dimensions.
+Training and checkpoint formats are unchanged; export does not itself perform INT8 quantization.
 Input is float32 RGB `[batch_size, 3, height, width]`, scaled to `[0, 1]`; perform
 resize/letterbox preprocessing and NMS in your application.
 
 `image_size=[640,640]` means `[width,height]` (positive multiples of 32), and
 `task.batch_size=1` sets the export batch size. At 640×640 with 80 classes,
-YOLOv9 returns `[1,8400,84]`. Spatial dimensions are fixed for both formats;
+YOLOv9 ONNX with `reg_max=16` returns `[1,8400,144]`; TFLite returns `[1,8400,84]`.
+Spatial dimensions are fixed for both formats;
 `task.dynamic_batch=true` is ONNX-only. Files default to
 `runs/export/<name>/<model>.onnx` or `.tflite`; use `task.output` to choose a path.
 Use the same `model` and `dataset` configuration as the trained checkpoint.

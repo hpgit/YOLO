@@ -26,13 +26,47 @@ keep spatial dimensions fixed. ONNX supports an optional dynamic batch axis via
 ``task.dynamic_batch=true``; TFLite uses ``task.batch_size`` as a fixed dimension.
 The default ONNX opset is 17 (configurable with ``task.opset``).
 
-The single float32 output is ``[B, N, 4 + C]``. Boxes from all Main detection
-scales are concatenated in head order. Each row is
-``[x1, y1, x2, y2, class_0_score, ..., class_C-1_score]``. Coordinates are decoded
-in input-image pixels, and may extend outside the image. Confidence is sigmoid
-class probability for YOLOv9 and sigmoid class probability multiplied by sigmoid
-objectness for YOLOv7; there is no separate objectness column. YOLOv9 rows are in
-spatial row-major order per scale; YOLOv7 uses anchor then spatial row-major order.
+YOLOv9 ONNX output
+~~~~~~~~~~~~~~~~~
+
+The single float32 output is ``[B, N, 4*R + C]``, where ``R=reg_max`` (usually 16).
+All Main detection scales are concatenated in head order, with spatial row-major
+order within each scale. Each row is::
+
+    [P_left(0), ..., P_left(R-1),
+     P_top(0), ..., P_top(R-1),
+     P_right(0), ..., P_right(R-1),
+     P_bottom(0), ..., P_bottom(R-1),
+     sigmoid(class_0), ..., sigmoid(class_C-1)]
+
+Each direction's probabilities are produced by a separate Softmax over its R bins.
+They sum to 1 independently; class probabilities use independent sigmoids and do
+not need to sum to 1. The output contains probabilities, not logits or decoded boxes.
+No DFL projection, stride multiplication or anchor-grid decoding is included.
+Export remains float32; it does not insert INT8 quantization.
+
+This is a breaking output-contract change from the previous YOLOv9 ONNX
+``[B,N,4+C]`` decoded output. Update consumers when re-exporting. For postprocessing,
+split the last C channels as class scores, reshape the first 4*R channels to
+``[B,N,4,R]`` and compute ``distance = sum(probability[i] * i)`` for i=0..R-1.
+Multiply L/T/R/B distances by each candidate's stride and decode with its anchor
+center: ``xyxy = [anchor_x-left, anchor_y-top, anchor_x+right, anchor_y+bottom]``.
+For the standard heads, anchor centers are ``(column+0.5, row+0.5) * stride``.
+Use the model's actual strides and head order. Scores already have sigmoid applied,
+and the box distributions already have Softmax applied; do not apply either again.
+
+TFLite and YOLOv7 ONNX output
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+These paths retain the single float32 decoded output ``[B,N,4+C]`` with rows
+``[x1,y1,x2,y2,class_0_score,...,class_C-1_score]``. Coordinates use input-image
+pixels and may extend outside the image. YOLOv9 TFLite scores are sigmoid class
+probabilities. YOLOv7 scores multiply sigmoid class probability by sigmoid
+objectness, with no separate objectness column. YOLOv7 rows use anchor then spatial
+row-major order within each scale.
+
+Common export constraints
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For the supplied stride-8/16/32 YOLOv9 detection models at 640 by 640, N is 8400;
 YOLOv7 uses three anchors at each location, giving N = 25200. No NMS, confidence
@@ -40,9 +74,10 @@ thresholding, top-k selection, coordinate clipping, inverse letterbox transform,
 or auxiliary prediction output is included. Classification and segmentation
 models are not supported by this detection export task.
 
-Export replaces DFL's 5-D Conv3d calculation in a copy of the model with an
-equivalent 4-D Conv2d calculation. Spatial dimensions are flattened before
-softmax, and the checkpoint's projection weights are preserved. Training,
+YOLOv9 ONNX replaces DFL in a copy of the model with a rank-4 probability path:
+``[B,4*R,H,W] -> [B,4,R,H*W] -> [B,H*W,4,R] -> Softmax(last axis) -> [B,H*W,4*R]``.
+The unused DFL projection is removed. Decoded export instead uses a rank-4 Conv2d
+projection and preserves the checkpoint's projection weights. Training,
 ordinary inference, and checkpoint formats are unchanged. Internal ONNX tensors,
 including intermediate results, constants, and weights, must have rank at most 4.
 Export infers and saves internal shapes and rejects unknown ranks or ranks above 4;
@@ -55,7 +90,7 @@ it, and ``exist_ok=false`` to prevent overwriting. ONNX graph inputs and outputs
 are named ``images`` and ``predictions``; TFLite tensor names are converter-defined,
 so obtain their indices from the runtime's input/output details.
 
-This task's decoded ONNX output is intended for external deployment. The existing
+This task's ONNX output is intended for external deployment. The existing
 ``task=inference task.fast_inference=onnx`` loader uses its own raw-head ONNX format
 and is not a reader for these exported files.
 
