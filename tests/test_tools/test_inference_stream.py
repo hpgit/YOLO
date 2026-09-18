@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
 from queue import Queue
 from threading import Event
 from time import sleep
@@ -10,6 +14,35 @@ from PIL import Image
 
 from yolo.tools import data_loader
 from yolo.tools.data_loader import StreamDataLoader
+
+
+@pytest.mark.parametrize("devices,save_predict", [(1, True), (2, True), (2, False)])
+def test_cli_saves_frames_only_in_run_directory(tmp_path, devices, save_predict):
+    source = tmp_path / "inputs"
+    source.mkdir()
+    for index in range(3):
+        Image.new("RGB", (64, 64), (index * 50, 0, 0)).save(source / f"{index}.png")
+
+    project_root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ, OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(project_root), env.get("PYTHONPATH")]))
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "yolo.lazy", "task=inference", "model=v9-t",
+            "weight=false", "accelerator=cpu", f"device={devices}", "image_size=[64,64]",
+            f"task.data.source={source}", f"task.save_predict={str(save_predict).lower()}",
+            "use_wandb=false", "use_tensorboard=false", "name=output-test",
+        ],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    run_dir = tmp_path / "runs" / "inference" / "output-test"
+    expected = {run_dir / f"frame{index:08d}.jpg" for index in range(3)} if save_predict else set()
+    assert set(tmp_path.rglob("*.jpg")) == expected
+    for path in expected:
+        with Image.open(path) as frame:
+            assert frame.format == "JPEG"
+            assert frame.size == (64, 64)
 
 
 def config(source):

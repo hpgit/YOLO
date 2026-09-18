@@ -252,6 +252,10 @@ class InferenceModel(BaseModel):
         return img, fps
 
     def _save_image(self, img, batch_idx):
+        # Only rank zero receives the run directory from setup(); other ranks
+        # fall back to the working directory and must not write duplicate frames.
+        if not self.trainer.is_global_zero:
+            return
         save_image_path = Path(self.trainer.default_root_dir) / f"frame{batch_idx:08d}.jpg"
         img.save(save_image_path)
         print(f"💾 Saved visualize image at {save_image_path}")
