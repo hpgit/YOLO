@@ -94,12 +94,42 @@ python yolo/lazy.py task=inference \ # default is inference
                     device=cpu \ # hardware cuda, cpu, mps
                     model=v9-s \ # model version: v9-c, m, s
                     task.nms.min_confidence=0.1 \ # nms config
-                    task.fast_inference=onnx \ # onnx, trt, deploy
                     task.data.source=data/toy/images/train \ # file, dir, webcam
                     +quiet=True \ # Quiet Output
 yolo task.data.source={Any Source} # if pip installed
 yolo task=inference task.data.source={Any}
 ```
+
+For an exported ONNX model (including QDQ), use its file as `weight`:
+
+```shell
+pip install -e '.[export-onnx]'
+python yolo/lazy.py task=inference weight=runs/export/v9-dev/v9-c.onnx \
+    task.data.source=demo/images/inference/image.png name=onnx-demo
+```
+
+This runs ONNX Runtime without constructing a PyTorch model or Lightning Trainer.
+Input size and decoder settings come from the ONNX artifact. Results are saved as
+`runs/inference/onnx-demo/frame00000000.jpg` and `predictions.jsonl`;
+`task.save_predict=false` disables saving. CPU is the default; select runtime
+providers explicitly with `task.onnx.providers=[CUDAExecutionProvider,CPUExecutionProvider]`
+when using `onnxruntime-gpu`. `device` and `accelerator` do not select ONNX providers.
+
+**Portable single-file inference:** copy [onnx_inference.py](yolo/tools/onnx_inference.py)
+and the ONNX model anywhere. The file needs no repository installation or PyTorch:
+
+```shell
+pip install numpy Pillow onnxruntime
+python onnx_inference.py --model model.onnx --source image.jpg --output results
+# Image folders, videos and webcams are also supported (video/webcam needs OpenCV).
+pip install opencv-python-headless
+python onnx_inference.py --model model.onnx --source video.mp4 --output results
+```
+
+The file includes RGB letterboxing, DFL decoding, class-aware multi-label NMS,
+original-image coordinate restoration, drawing, and JSONL output. See
+[ONNX inference details](docs/4_deploy/2_onnx.rst) for the Python API, old export
+compatibility and options.
 
 ### Validation
 

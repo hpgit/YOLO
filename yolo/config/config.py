@@ -119,6 +119,7 @@ class InferenceConfig:
     data: DataConfig
     fast_inference: Optional[None]
     save_predict: bool
+    onnx: Optional[Dict[str, Any]] = None
 
 
 @dataclass

@@ -25,6 +25,14 @@ def main(cfg: Config):
 
         return export_model(cfg)
 
+    if cfg.task.task == "inference" and (
+        str(getattr(cfg, "weight", "")).lower().endswith(".onnx")
+        or getattr(cfg.task, "fast_inference", None) == "onnx"
+    ):
+        from yolo.tools.onnx_runner import run_onnx_inference
+
+        return run_onnx_inference(cfg)
+
     overrides = HydraConfig.get().overrides.task if HydraConfig.initialized() else []
     weight_explicit = any(item.lstrip("+").split("=", 1)[0] == "weight" for item in overrides)
     checkpoint_path = resolve_training_checkpoint(cfg, weight_explicit=weight_explicit)

@@ -178,6 +178,13 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
     actual = session.run(None, {"images": images.numpy()})[0]
     assert actual.shape == expected.shape
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4)
+    # Exercise the portable consumer against an independent PyTorch decoder.
+    from yolo.tools.onnx_inference import ONNXDetector
+
+    detector = ONNXDetector(path, threads=2)
+    with torch.no_grad():
+        decoded = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name)(images).numpy()
+    np.testing.assert_allclose(detector(images.numpy()), decoded, rtol=1e-4, atol=1e-4)
     if version == "v9-t":
         assert actual.shape == (images.shape[0], 42, 3 + 4 * reg_max)
         assert np.all((actual >= 0) & (actual <= 1))

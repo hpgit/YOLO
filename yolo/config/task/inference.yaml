@@ -1,6 +1,10 @@
 task: inference
 
 fast_inference:  # onnx, trt, deploy or Empty
+onnx:
+  providers: [CPUExecutionProvider]
+  output_format: auto # auto, dfl, xyxy; fallback for exports without metadata
+  strides: [8, 16, 32] # fallback for DFL exports without metadata
 data:
   source: demo/images/inference/image.png
   image_size: ${image_size}

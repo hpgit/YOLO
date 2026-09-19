@@ -189,6 +189,13 @@ def test_qdq_runtime_encodings_and_rank(tmp_path, dynamic):
     assert actual.shape == (images.shape[0], 42, 67)
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-5)
     np.testing.assert_allclose(actual[..., :64].reshape(-1, 4, 16).sum(-1), 1, atol=1e-6)
+    # Smoke-test the deploy consumer with runtime optimizations enabled, too.
+    from yolo.tools.onnx_inference import ONNXDetector
+
+    decoded = ONNXDetector(exported_path, threads=2)(images.numpy())
+    assert decoded.shape == (images.shape[0], 42, 7)
+    assert np.isfinite(decoded).all()
+    assert np.all((decoded[..., 4:] >= 0) & (decoded[..., 4:] <= 1))
 
 
 def test_fail_closed_and_profile_restore(tmp_path):

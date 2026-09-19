@@ -10,7 +10,7 @@ from torch import nn
 from yolo.config.config import Config
 from yolo.model.module import Anchor2Vec, MultiheadDetection
 from yolo.model.yolo import create_model
-from yolo.utils.bounding_box_utils import Anc2Box, create_converter
+from yolo.utils.bounding_box_utils import Anc2Box, _strides_from_feature_maps, create_converter
 from yolo.utils.logger import logger
 
 
@@ -230,6 +230,19 @@ def export_model(cfg: Config) -> Path:
         )
         exported = validate_onnx_tensor_ranks(onnx.load(str(output)))
         onnx.checker.check_model(exported)
+        # Carry the decoder contract with the artifact, including custom heads.
+        metadata = {
+            "version": 1,
+            "output_format": "dfl" if wrapper.probabilities else "xyxy",
+            "class_num": wrapper.class_num,
+            "class_names": list(cfg.dataset.class_list) if len(cfg.dataset.class_list) == wrapper.class_num else [],
+        }
+        if wrapper.probabilities:
+            with torch.no_grad():
+                heads = wrapper.model(sample, shortcut="Main")["Main"]
+            metadata["strides"] = _strides_from_feature_maps((head[0] for head in heads), cfg.image_size)
+            metadata["reg_max"] = (output_shape[-1] - wrapper.class_num) // 4
+        properties = {"yolo.inference": json.dumps(metadata)}
         if qdq:
             from yolo.tools.qat import encoding_manifest
 
@@ -238,14 +251,14 @@ def export_model(cfg: Config) -> Path:
             dq_nodes = [node for node in exported.graph.node if node.op_type == "DequantizeLinear"]
             if len(q_nodes) != len(encodings) or len(dq_nodes) != len(encodings):
                 raise ValueError("Export did not preserve every QAT quantizer as a Q/DQ pair.")
-            onnx.helper.set_model_props(
-                exported,
+            properties.update(
                 {
                     "yolo.qat": json.dumps(model.qat_metadata),
                     "yolo.qat.encodings": json.dumps(encodings),
                     "yolo.output": "[B,N,4*reg_max+C]: left,top,right,bottom bins,class probabilities",
                 },
             )
+        onnx.helper.set_model_props(exported, properties)
         onnx.save(exported, str(output))
     else:
         edge_model = litert_torch.convert(wrapper, (sample,))
