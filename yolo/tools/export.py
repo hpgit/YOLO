@@ -1,5 +1,6 @@
 """Export detection models with one pre-NMS output and rank <= 4 tensors."""
 
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -160,6 +161,9 @@ def validate_onnx_tensor_ranks(model):
 def export_model(cfg: Config) -> Path:
     """Run an export without a Trainer, dataset download or experiment logger."""
     task = cfg.task
+    qdq = getattr(task, "qdq", False)
+    if qdq and task.format != "onnx":
+        raise ValueError("QDQ export is ONNX-only; set task.format=onnx.")
     if task.format not in ("onnx", "tflite"):
         raise ValueError("task.format must be 'onnx' or 'tflite'.")
     if not isinstance(task.batch_size, int) or isinstance(task.batch_size, bool) or task.batch_size < 1:
@@ -193,9 +197,20 @@ def export_model(cfg: Config) -> Path:
     if output.exists() and not cfg.exist_ok:
         raise FileExistsError(output)
     model = create_model(deepcopy(cfg.model), class_num=cfg.dataset.class_num, weight_path=cfg.weight)
+    is_qat = hasattr(model, "qat_metadata")
+    if is_qat != qdq:
+        raise ValueError("Use task.qdq=true with a QAT checkpoint; FP export requires FP weights.")
+    if qdq:
+        from yolo.tools.qat import freeze_for_export
+
+        freeze_for_export(model)
     wrapper = ExportModel(
         model, cfg.model.anchor, list(cfg.image_size), cfg.model.name, probabilities=task.format == "onnx"
     ).eval()
+    if qdq:
+        from yolo.tools.qat import snap_export_weights
+
+        snap_export_weights(wrapper)
     width, height = cfg.image_size
     sample = torch.zeros(task.batch_size, 3, height, width)
     with torch.no_grad():
@@ -215,6 +230,22 @@ def export_model(cfg: Config) -> Path:
         )
         exported = validate_onnx_tensor_ranks(onnx.load(str(output)))
         onnx.checker.check_model(exported)
+        if qdq:
+            from yolo.tools.qat import encoding_manifest
+
+            encodings = encoding_manifest(wrapper)
+            q_nodes = [node for node in exported.graph.node if node.op_type == "QuantizeLinear"]
+            dq_nodes = [node for node in exported.graph.node if node.op_type == "DequantizeLinear"]
+            if len(q_nodes) != len(encodings) or len(dq_nodes) != len(encodings):
+                raise ValueError("Export did not preserve every QAT quantizer as a Q/DQ pair.")
+            onnx.helper.set_model_props(
+                exported,
+                {
+                    "yolo.qat": json.dumps(model.qat_metadata),
+                    "yolo.qat.encodings": json.dumps(encodings),
+                    "yolo.output": "[B,N,4*reg_max+C]: left,top,right,bottom bins,class probabilities",
+                },
+            )
         onnx.save(exported, str(output))
     else:
         edge_model = litert_torch.convert(wrapper, (sample,))

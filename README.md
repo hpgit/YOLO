@@ -133,7 +133,9 @@ TFLite and YOLOv7 ONNX retain decoded `[B,N,4+C]` output:
 `[x1, y1, x2, y2, class_0_score, ...]` in input-image pixels. YOLOv7 scores include objectness.
 All exports exclude auxiliary outputs, NMS and confidence filtering. Internal ONNX
 tensors, constants, and weights are checked to have at most four dimensions.
-Training and checkpoint formats are unchanged; export does not itself perform INT8 quantization.
+FP training and checkpoint formats are unchanged; ordinary export does not itself perform INT8 quantization.
+For YOLOv9 convolution QAT and encoding-preserving QDQ ONNX, see [QAT guide](docs/qat.md).
+Use `qat.enabled=true` for fine-tuning and `task.qdq=true` to export a trained QAT checkpoint.
 Input is float32 RGB `[batch_size, 3, height, width]`, scaled to `[0, 1]`; perform
 resize/letterbox preprocessing and NMS in your application.
 

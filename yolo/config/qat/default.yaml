@@ -1,0 +1,5 @@
+enabled: false
+# Epoch 0 collects ranges on training data without fake quantization.
+fake_quant_start_epoch: 1
+observer_freeze_epoch: 3
+averaging_constant: 0.01

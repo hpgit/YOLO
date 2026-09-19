@@ -374,7 +374,7 @@ def setup(cfg: Config, *, resume=False):
     if cfg.task.task == "train" and hasattr(cfg.task.data, "equivalent_batch_size"):
         progress.append(GradientAccumulation(data_cfg=cfg.task.data, scheduler_cfg=cfg.task.scheduler))
 
-    if hasattr(cfg.task, "ema") and cfg.task.ema.enable:
+    if hasattr(cfg.task, "ema") and cfg.task.ema.enable and not getattr(getattr(cfg, "qat", None), "enabled", False):
         progress.append(EMA(cfg.task.ema.decay))
     if quiet:
         logger.setLevel(logging.ERROR)

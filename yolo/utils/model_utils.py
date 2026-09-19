@@ -56,6 +56,8 @@ class EMA(Callback):
         self._step_handles = []
 
     def setup(self, trainer, pl_module, stage):
+        if hasattr(pl_module.model, "qat_metadata"):
+            raise ValueError("Disable EMA for QAT: averaging observer ranges/scales would corrupt the quantization state.")
         pl_module.ema = deepcopy(pl_module.model).eval()
         pl_module.ema.requires_grad_(False)
 

@@ -28,13 +28,16 @@ def main(cfg: Config):
     overrides = HydraConfig.get().overrides.task if HydraConfig.initialized() else []
     weight_explicit = any(item.lstrip("+").split("=", 1)[0] == "weight" for item in overrides)
     checkpoint_path = resolve_training_checkpoint(cfg, weight_explicit=weight_explicit)
+    from yolo.tools.qat import configure_qat_run
+
+    checkpoint_path = configure_qat_run(cfg, checkpoint_path)
     callbacks, loggers, save_path = setup(cfg, resume=checkpoint_path is not None)
 
     trainer = Trainer(
         accelerator=getattr(cfg, "accelerator", "auto"),
         devices=cfg.device,
         max_epochs=getattr(cfg.task, "epoch", None),
-        precision="16-mixed",
+        precision="32-true" if getattr(getattr(cfg, "qat", None), "enabled", False) else "16-mixed",
         callbacks=callbacks,
         sync_batchnorm=True,
         logger=loggers,

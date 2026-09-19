@@ -24,6 +24,7 @@ class YOLO(nn.Module):
     def __init__(self, model_cfg: ModelConfig, class_num: int = 80):
         super(YOLO, self).__init__()
         self.num_classes = class_num
+        self.model_name = model_cfg.name
         self.layer_map = get_layer_map()  # Get the map Dict[str: Module]
         self.model: List[YOLOLayer] = nn.ModuleList()
         self.reg_max = getattr(model_cfg.anchor, "reg_max", 16)
@@ -133,6 +134,11 @@ class YOLO(nn.Module):
         """
         if isinstance(weights, Path):
             weights = torch.load(weights, map_location=torch.device("cpu"), weights_only=False)
+        if "qat" in weights:
+            from yolo.tools.qat import load_qat_state
+
+            load_qat_state(self, weights)
+            return
         if "state_dict" in weights:
             weights = {name.removeprefix("model.model."): key for name, key in weights["state_dict"].items()}
         model_state_dict = self.model.state_dict()
@@ -164,7 +170,9 @@ class YOLO(nn.Module):
         self.model.load_state_dict(model_state_dict)
 
 
-def create_model(model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, class_num: int = 80) -> YOLO:
+def create_model(
+    model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, class_num: int = 80, qat_cfg=None
+) -> YOLO:
     """Constructs and returns a model from a Dictionary configuration file.
 
     Args:
@@ -189,4 +197,8 @@ def create_model(model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, 
             logger.info(":white_check_mark: Success load model & weight")
     else:
         logger.info(":white_check_mark: Success load model")
+    if qat_cfg is not None and qat_cfg.enabled:
+        from yolo.tools.qat import prepare_qat
+
+        prepare_qat(model, qat_cfg)
     return model

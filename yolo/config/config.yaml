@@ -9,4 +9,5 @@ defaults:
   - task: inference
   - dataset: coco
   - model: v9-c
+  - qat: default
   - general

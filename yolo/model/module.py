@@ -210,6 +210,8 @@ class RepConv(nn.Module):
         self.conv2 = Conv(in_channels, out_channels, 1, activation=False, **kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
+        if hasattr(self, "reparam"):
+            return self.act(self.reparam(x))
         return self.act(self.conv1(x) + self.conv2(x))
 
 

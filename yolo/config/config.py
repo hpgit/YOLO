@@ -145,6 +145,14 @@ class TrainConfig:
 
 
 @dataclass
+class QATConfig:
+    enabled: bool = False
+    fake_quant_start_epoch: int = 1
+    observer_freeze_epoch: int = 3
+    averaging_constant: float = 0.01
+
+
+@dataclass
 class ExportConfig:
     task: str
     format: str
@@ -152,6 +160,7 @@ class ExportConfig:
     dynamic_batch: bool
     opset: int
     output: Optional[str]
+    qdq: bool = False
 
 
 @dataclass
@@ -159,6 +168,7 @@ class Config:
     task: Union[TrainConfig, InferenceConfig, ValidationConfig, ExportConfig]
     dataset: DatasetConfig
     model: ModelConfig
+    qat: QATConfig
     name: str
 
     accelerator: Optional[str]

@@ -1,5 +1,6 @@
 task: export
 format: onnx # onnx or tflite
+qdq: false # ONNX only; requires a calibrated, fake-quant-enabled QAT checkpoint
 batch_size: 1
 dynamic_batch: false # ONNX only; spatial dimensions stay fixed
 opset: 17

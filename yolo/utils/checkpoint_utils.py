@@ -29,14 +29,30 @@ class YOLOCheckpoint(ModelCheckpoint):
         super().on_train_epoch_end(trainer, pl_module)
 
     def on_validation_end(self, trainer, pl_module):
-        if trainer.state.fn == "fit" and not trainer.sanity_checking and "map" in trainer.callback_metrics:
+        from yolo.tools.qat import quantizers
+
+        detector = pl_module.ema
+        quantization_active = all(bool(module.fake_quant_enabled[0]) for _, module in quantizers(detector))
+        if (
+            trainer.state.fn == "fit"
+            and not trainer.sanity_checking
+            and "map" in trainer.callback_metrics
+            and quantization_active
+        ):
             score = float(trainer.callback_metrics["map"])
             if isfinite(score) and score > self.best_map:
                 if trainer.is_global_zero:
                     # Validation uses EMA when enabled; the inner state dict is
                     # the same weight-only format accepted by YOLO.save_load_weights.
-                    detector = pl_module.ema
-                    weights = {key: value.detach().cpu() for key, value in detector.model.state_dict().items()}
+                    from yolo.tools.qat import checkpoint_weights
+
+                    weights = checkpoint_weights(detector)
+                    if "qat" in weights:
+                        weights["model_state_dict"] = {
+                            key: value.detach().cpu() for key, value in weights["model_state_dict"].items()
+                        }
+                    else:
+                        weights = {key: value.detach().cpu() for key, value in weights.items()}
                     destination = Path(self.dirpath) / "best.pt"
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     temporary = destination.with_suffix(".pt.tmp")

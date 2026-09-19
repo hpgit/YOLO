@@ -63,7 +63,9 @@ def create_validation_metric(validation_cfg, dataset_cfg):
 class BaseModel(LightningModule):
     def __init__(self, cfg: Config):
         super().__init__()
-        self.model = create_model(cfg.model, class_num=cfg.dataset.class_num, weight_path=cfg.weight)
+        self.model = create_model(
+            cfg.model, class_num=cfg.dataset.class_num, weight_path=cfg.weight, qat_cfg=getattr(cfg, "qat", None)
+        )
 
     def forward(self, x):
         return self.model(x)
@@ -132,6 +134,10 @@ class TrainModel(ValidateModel):
         self.train_loader = create_dataloader(self.cfg.task.data, self.cfg.dataset, self.cfg.task.task)
 
     def setup(self, stage):
+        if hasattr(self.model, "qat_metadata") and self.trainer.world_size != 1:
+            raise ValueError("QAT currently requires one device; distributed observer synchronization is not implemented.")
+        if hasattr(self.model, "qat_metadata") and self.trainer.precision != "32-true":
+            raise ValueError("QAT requires precision='32-true'; mixed precision is not supported.")
         super().setup(stage)
         self.loss_fn = create_loss_function(self.cfg, self.vec2box)
 
@@ -146,6 +152,9 @@ class TrainModel(ValidateModel):
             self.trainer.optimizers[0].max_lr = max_lr
 
     def on_train_epoch_start(self):
+        from yolo.tools.qat import set_qat_epoch
+
+        set_qat_epoch(self.model, self.current_epoch)
         batches = self.trainer.num_training_batches
         if not isfinite(batches) or batches <= 0:
             raise ValueError("Training requires a finite, nonempty number of batches.")
@@ -184,10 +193,14 @@ class TrainModel(ValidateModel):
             scheduler.step()
 
     def on_save_checkpoint(self, checkpoint):
+        if hasattr(self.model, "qat_metadata"):
+            checkpoint["qat"] = self.model.qat_metadata
         checkpoint["training_accumulation"] = {"last_opt_step": self._last_opt_step}
         checkpoint["training_optimizer"] = {"max_lr": getattr(self.trainer.optimizers[0], "max_lr", None)}
 
     def on_load_checkpoint(self, checkpoint):
+        if checkpoint.get("qat") != getattr(self.model, "qat_metadata", None):
+            raise ValueError("Training checkpoint QAT structure/profile does not match the model.")
         self._last_opt_step = checkpoint.get("training_accumulation", {}).get("last_opt_step", -1)
         self._restored_optimizer_max_lr = checkpoint.get("training_optimizer", {}).get("max_lr")
 
@@ -195,7 +208,7 @@ class TrainModel(ValidateModel):
         lr_dict = self.trainer.optimizers[0].next_batch()
         batch_size, images, targets, *_ = batch
         predicts = self(images)
-        aux_predicts = self.vec2box(predicts["AUX"])
+        aux_predicts = self.vec2box(predicts["AUX"]) if "AUX" in predicts else None
         main_predicts = self.vec2box(predicts["Main"])
         loss, loss_item = self.loss_fn(aux_predicts, main_predicts, targets)
         self.log_dict(
@@ -219,6 +232,9 @@ class TrainModel(ValidateModel):
 
     def configure_optimizers(self):
         optimizer = create_optimizer(self.model, self.cfg.task.optimizer)
+        if hasattr(self.model, "qat_metadata"):
+            # Fine-tuning fused biases must not inherit FP training's 0.1 bias warmup.
+            optimizer.max_lr = [self.cfg.task.optimizer.args.lr] * len(optimizer.param_groups)
         scheduler = create_scheduler(optimizer, self.cfg.task.scheduler)
         return [optimizer], [scheduler]
 
