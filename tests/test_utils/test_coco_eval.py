@@ -17,7 +17,6 @@ from pycocotools.cocoeval import COCOeval
 
 from yolo.utils.coco_eval import CocoJsonEvaluator
 
-
 METRIC_NAMES = (
     "map",
     "map_50",

@@ -40,9 +40,7 @@ def _strides_from_feature_maps(feature_maps, image_size):
     for feature_map in feature_maps:
         feature_h, feature_w = feature_map.shape[-2:]
         if H % feature_h or W % feature_w:
-            raise ValueError(
-                f"Image size {(W, H)} is not divisible by feature map size {(feature_w, feature_h)}"
-            )
+            raise ValueError(f"Image size {(W, H)} is not divisible by feature map size {(feature_w, feature_h)}")
         stride_h, stride_w = H // feature_h, W // feature_w
         if stride_h != stride_w:
             raise ValueError(

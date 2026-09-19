@@ -1,18 +1,20 @@
 """Compare unchanged NMS outputs and timings on captured real COCO predictions."""
+
 import argparse
-from collections import defaultdict
 import json
-from pathlib import Path
 import sys
 import time
+from collections import defaultdict
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
+from nms_grouping_candidate import grouped_batched_nms
 from omegaconf import OmegaConf
 from torchvision.ops import batched_nms as original_batched_nms
+
 import yolo.utils.bounding_box_utils as bounding
-from nms_grouping_candidate import grouped_batched_nms
 
 
 def main():
@@ -38,7 +40,7 @@ def main():
             for repeat in range(2):
                 results = {}
                 variants = [("baseline", original), ("grouped", grouped_batched_nms)]
-                for label, function in variants[::1 if repeat == 0 else -1]:
+                for label, function in variants[:: 1 if repeat == 0 else -1]:
                     bounding.batched_nms = function
                     torch.cuda.synchronize()
                     start = time.perf_counter()
@@ -51,8 +53,13 @@ def main():
                 totals[key] += value
             rows.append({"input": path.name, "images": len(cls), "seconds_for_two_repeats": dict(times)})
     bounding.batched_nms = configured
-    result = {"bitwise_equal": True, "images": sum(row["images"] for row in rows),
-              "seconds_for_two_repeats": dict(totals), "speedup": totals["baseline"] / totals["grouped"], "batches": rows}
+    result = {
+        "bitwise_equal": True,
+        "images": sum(row["images"] for row in rows),
+        "seconds_for_two_repeats": dict(totals),
+        "speedup": totals["baseline"] / totals["grouped"],
+        "batches": rows,
+    }
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
 

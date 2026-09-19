@@ -1,4 +1,5 @@
 """NMS grouping without repeatedly scanning the full candidate tensor."""
+
 import torch
 from torchvision.ops import batched_nms, nms
 

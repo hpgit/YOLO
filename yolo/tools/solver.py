@@ -27,16 +27,21 @@ def create_validation_metric(validation_cfg, dataset_cfg):
     configured_path = getattr(validation_cfg, "annotation_path", None)
     has_parquet = any(resolve_parquet_annotation(dataset_root, phase) is not None for phase in phases)
     if has_parquet and backend == "coco" and not configured_path:
-        raise ValueError("Parquet validation requires evaluator=auto or torchmetrics, or an explicit COCO annotation_path")
-    annotation_paths = [Path(configured_path)] if configured_path else [
-        Path("annotations") / f"instances_{phase}.json" for phase in phases
-    ]
+        raise ValueError(
+            "Parquet validation requires evaluator=auto or torchmetrics, or an explicit COCO annotation_path"
+        )
+    annotation_paths = (
+        [Path(configured_path)]
+        if configured_path
+        else [Path("annotations") / f"instances_{phase}.json" for phase in phases]
+    )
     annotation_paths = [path if path.is_absolute() else dataset_root / path for path in annotation_paths]
     # The loader gives an explicit split TXT list precedence over JSON labels.
     # Match that in auto mode; an explicit JSON request makes JSON authoritative.
     split_txt = any((dataset_root / f"{phase}.txt").is_file() for phase in phases)
     use_json = backend == "coco" or (
-        backend == "auto" and (
+        backend == "auto"
+        and (
             configured_path or (not has_parquet and all(path.is_file() for path in annotation_paths) and not split_txt)
         )
     )
@@ -49,7 +54,9 @@ def create_validation_metric(validation_cfg, dataset_cfg):
                 image_root /= parquet_split_name(phases[0]) if has_parquet else phases[0]
             metric = CocoJsonEvaluator(annotation_paths[0], image_root=image_root)
         else:
-            metric = CocoJsonEvaluator(annotation_paths, image_root=[dataset_root / "images" / phase for phase in phases])
+            metric = CocoJsonEvaluator(
+                annotation_paths, image_root=[dataset_root / "images" / phase for phase in phases]
+            )
         if len(metric.coco_gt.getCatIds()) != dataset_cfg.class_num:
             raise ValueError("Annotation category count must match dataset.class_num for COCO evaluation.")
         logger.info(f"COCO JSON evaluation: {annotation_paths}")
@@ -135,7 +142,9 @@ class TrainModel(ValidateModel):
 
     def setup(self, stage):
         if hasattr(self.model, "qat_metadata") and self.trainer.world_size != 1:
-            raise ValueError("QAT currently requires one device; distributed observer synchronization is not implemented.")
+            raise ValueError(
+                "QAT currently requires one device; distributed observer synchronization is not implemented."
+            )
         if hasattr(self.model, "qat_metadata") and self.trainer.precision != "32-true":
             raise ValueError("QAT requires precision='32-true'; mixed precision is not supported.")
         super().setup(stage)
@@ -173,8 +182,7 @@ class TrainModel(ValidateModel):
         nominal_batch = getattr(data, "equivalent_batch_size", global_batch)
         ratio = nominal_batch / global_batch
         warmup = self.cfg.task.scheduler.warmup
-        warmup_batches = max(round(warmup.epochs * self._batches_per_epoch),
-                             getattr(warmup, "min_iterations", 100))
+        warmup_batches = max(round(warmup.epochs * self._batches_per_epoch), getattr(warmup, "min_iterations", 100))
         if warmup_batches and iteration <= warmup_batches:
             return max(1, round(1 + (ratio - 1) * iteration / warmup_batches))
         return max(1, round(ratio))

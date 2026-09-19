@@ -8,7 +8,6 @@ from torch import nn
 from yolo.model.yolo import create_model
 from yolo.utils.bounding_box_utils import Anc2Box, Vec2Box
 
-
 IMAGE_SIZE = [96, 64]
 EXPECTED_STRIDES = [8, 16, 32]
 

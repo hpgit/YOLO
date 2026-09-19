@@ -26,8 +26,7 @@ def main(cfg: Config):
         return export_model(cfg)
 
     if cfg.task.task == "inference" and (
-        str(getattr(cfg, "weight", "")).lower().endswith(".onnx")
-        or getattr(cfg.task, "fast_inference", None) == "onnx"
+        str(getattr(cfg, "weight", "")).lower().endswith(".onnx") or getattr(cfg.task, "fast_inference", None) == "onnx"
     ):
         from yolo.tools.onnx_runner import run_onnx_inference
 

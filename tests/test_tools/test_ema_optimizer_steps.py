@@ -62,9 +62,7 @@ def test_ema_initializes_with_or_without_sanity_validation(run_sanity_validation
     model = FloatAndIntegerState()
     module = _module(model)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-    trainer = SimpleNamespace(
-        optimizers=[optimizer], world_size=1, sanity_checking=run_sanity_validation
-    )
+    trainer = SimpleNamespace(optimizers=[optimizer], world_size=1, sanity_checking=run_sanity_validation)
     callback = EMA()
     initial = deepcopy(model.state_dict())
 
@@ -88,9 +86,7 @@ def test_post_step_ema_matches_float_reference_and_keeps_integer_state(world_siz
     decay = 0.9
     tau = 2.0
     model = FloatAndIntegerState()
-    callback, trainer, module, optimizer = _start_callback(
-        model, decay=decay, tau=tau, world_size=world_size
-    )
+    callback, trainer, module, optimizer = _start_callback(model, decay=decay, tau=tau, world_size=world_size)
     initial_weight = callback.ema_state_dict["weight"].clone()
     initial_counter = callback.ema_state_dict["counter"].clone()
     model.counter.fill_(17)
@@ -168,9 +164,7 @@ def test_callback_state_restores_update_counter_and_ema_values():
     restored_model = FloatAndIntegerState()
     restored_module = _module(restored_model)
     restored_optimizer = torch.optim.SGD(restored_model.parameters(), lr=0.25)
-    restored_trainer = SimpleNamespace(
-        optimizers=[restored_optimizer], world_size=8, sanity_checking=False
-    )
+    restored_trainer = SimpleNamespace(optimizers=[restored_optimizer], world_size=8, sanity_checking=False)
     restored = EMA(decay=callback.decay, tau=callback.tau)
     restored.load_state_dict(saved)
     restored.setup(restored_trainer, restored_module, "fit")
@@ -178,16 +172,12 @@ def test_callback_state_restores_update_counter_and_ema_values():
 
     assert restored.step == callback.step == 1
     for key in saved["ema_state_dict"]:
-        torch.testing.assert_close(
-            restored.ema_state_dict[key], saved["ema_state_dict"][key], rtol=0, atol=0
-        )
+        torch.testing.assert_close(restored.ema_state_dict[key], saved["ema_state_dict"][key], rtol=0, atol=0)
 
     initial_ema = restored.ema_state_dict["weight"].clone()
     _optimizer_update(restored_model, restored_optimizer)
     expected_decay = restored.decay * (1 - exp(-2 / restored.tau))
-    expected = restored_model.weight.detach() + (
-        initial_ema - restored_model.weight.detach()
-    ) * expected_decay
+    expected = restored_model.weight.detach() + (initial_ema - restored_model.weight.detach()) * expected_decay
     assert restored.step == 2
     torch.testing.assert_close(restored.ema_state_dict["weight"], expected, rtol=0, atol=0)
     restored.teardown(restored_trainer, restored_module, "fit")

@@ -57,7 +57,9 @@ class EMA(Callback):
 
     def setup(self, trainer, pl_module, stage):
         if hasattr(pl_module.model, "qat_metadata"):
-            raise ValueError("Disable EMA for QAT: averaging observer ranges/scales would corrupt the quantization state.")
+            raise ValueError(
+                "Disable EMA for QAT: averaging observer ranges/scales would corrupt the quantization state."
+            )
         pl_module.ema = deepcopy(pl_module.model).eval()
         pl_module.ema.requires_grad_(False)
 
@@ -67,9 +69,7 @@ class EMA(Callback):
         else:
             # Callback checkpoint states can be loaded on CPU before strategy setup.
             current = pl_module.model.state_dict()
-            self.ema_state_dict = {
-                key: value.to(current[key]) for key, value in self.ema_state_dict.items()
-            }
+            self.ema_state_dict = {key: value.to(current[key]) for key, value in self.ema_state_dict.items()}
 
     def on_train_start(self, trainer, pl_module):
         self._initialize(pl_module)

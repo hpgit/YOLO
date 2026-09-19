@@ -1,4 +1,5 @@
 """Summarize paired subset benchmarks and fixed-weight prediction equivalence."""
+
 import argparse
 import hashlib
 import json
@@ -28,12 +29,27 @@ def main():
     if caches:
         assert all(cache == caches[0] for cache in caches)
     for result in baseline + optimized:
-        for key in ("dataset_manifest_sha256", "image_size", "batch_size", "workers", "seed", "torch", "gpu", "train_images", "val_images"):
+        for key in (
+            "dataset_manifest_sha256",
+            "image_size",
+            "batch_size",
+            "workers",
+            "seed",
+            "torch",
+            "gpu",
+            "train_images",
+            "val_images",
+        ):
             assert result[key] == baseline[0][key], key
     summary = {"runs": {"baseline": [str(p) for p in args.baseline], "optimized": [str(p) for p in args.optimized]}}
     for key in ("train_seconds", "validation_seconds", "fit_or_validate_seconds", "train_peak_allocated_bytes"):
         before, after = median(r[key] for r in baseline), median(r[key] for r in optimized)
-        summary[key] = {"baseline_median": before, "optimized_median": after, "ratio_before_over_after": before / after, "reduction_percent": 100 * (1 - after / before)}
+        summary[key] = {
+            "baseline_median": before,
+            "optimized_median": after,
+            "ratio_before_over_after": before / after,
+            "reduction_percent": 100 * (1 - after / before),
+        }
     old = torch.load(args.fixed_reference / "predictions.pt", weights_only=True)
     new = torch.load(args.fixed_optimized / "predictions.pt", weights_only=True)
     reference_result, fixed_result = read(args.fixed_reference), read(args.fixed_optimized)
@@ -41,7 +57,9 @@ def main():
         assert fixed_result["dataset_cache_sha256"] == caches[0]
     assert fixed_result["validation_only"]
     assert Path(fixed_result["eval_state"]).resolve() == (args.fixed_reference / "ema.pt").resolve()
-    assert fixed_result["eval_state_sha256"] == hashlib.sha256((args.fixed_reference / "ema.pt").read_bytes()).hexdigest()
+    assert (
+        fixed_result["eval_state_sha256"] == hashlib.sha256((args.fixed_reference / "ema.pt").read_bytes()).hexdigest()
+    )
     for key in ("dataset_manifest_sha256", "image_size", "batch_size", "workers", "seed", "torch", "gpu", "val_images"):
         assert reference_result[key] == fixed_result[key], key
     assert len(old) == len(new) == reference_result["val_images"]
@@ -52,11 +70,20 @@ def main():
     assert metric_keys
     for key in metric_keys:
         assert old_metrics[key] == new_metrics[key], (key, old_metrics[key], new_metrics[key])
-    summary["fixed_weight_equivalence"] = {"reference": str(args.fixed_reference), "optimized": str(args.fixed_optimized), "images": len(old), "predictions_bitwise_equal": True, "metrics_exactly_equal": True, "metric_keys": metric_keys}
+    summary["fixed_weight_equivalence"] = {
+        "reference": str(args.fixed_reference),
+        "optimized": str(args.fixed_optimized),
+        "images": len(old),
+        "predictions_bitwise_equal": True,
+        "metrics_exactly_equal": True,
+        "metric_keys": metric_keys,
+    }
     summary["cache_hashes_recorded_for_all_timed_runs"] = len(caches) == len(baseline + optimized)
     for a, b in zip(baseline, optimized):
         assert len(a["losses"]) == len(b["losses"]) > 0
-    summary["paired_training_loss_max_abs_difference"] = [max(abs(x-y) for x,y in zip(a["losses"], b["losses"])) for a,b in zip(baseline, optimized)]
+    summary["paired_training_loss_max_abs_difference"] = [
+        max(abs(x - y) for x, y in zip(a["losses"], b["losses"])) for a, b in zip(baseline, optimized)
+    ]
     summary["paired_trained_ema_bitwise_equal"] = []
     for before_path, after_path in zip(args.baseline, args.optimized):
         before_state = torch.load(before_path / "ema.pt", weights_only=True, map_location="cpu")

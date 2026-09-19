@@ -10,7 +10,11 @@ from torch import nn
 from yolo.config.config import Config
 from yolo.model.module import Anchor2Vec, MultiheadDetection
 from yolo.model.yolo import create_model
-from yolo.utils.bounding_box_utils import Anc2Box, _strides_from_feature_maps, create_converter
+from yolo.utils.bounding_box_utils import (
+    Anc2Box,
+    _strides_from_feature_maps,
+    create_converter,
+)
 from yolo.utils.logger import logger
 
 

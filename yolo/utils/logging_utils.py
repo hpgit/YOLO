@@ -64,10 +64,18 @@ class YOLOQuietEpochSummary(Callback):
     """Print epoch summaries and optionally append them to the experiment's result log."""
 
     metric_labels = {
-        "map": "AP", "map_50": "AP50", "map_75": "AP75",
-        "map_small": "AP_small", "map_medium": "AP_medium", "map_large": "AP_large",
-        "mar_1": "AR1", "mar_10": "AR10", "mar_100": "AR100",
-        "mar_small": "AR_small", "mar_medium": "AR_medium", "mar_large": "AR_large",
+        "map": "AP",
+        "map_50": "AP50",
+        "map_75": "AP75",
+        "map_small": "AP_small",
+        "map_medium": "AP_medium",
+        "map_large": "AP_large",
+        "mar_1": "AR1",
+        "mar_10": "AR10",
+        "mar_100": "AR100",
+        "mar_small": "AR_small",
+        "mar_medium": "AR_medium",
+        "mar_large": "AR_large",
     }
 
     def __init__(self, result_path: Optional[Path] = None):
@@ -433,9 +441,7 @@ def validate_log_directory(cfg: Config, exp_name: str, *, resume=False) -> Path:
             save_path = base_path / exp_name
             index += 1
         if index > 1:
-            logger.warning(
-                f"🔀 Experiment directory exists! Changed [red]{old_exp_name}[/] to [green]{exp_name}[/]"
-            )
+            logger.warning(f"🔀 Experiment directory exists! Changed [red]{old_exp_name}[/] to [green]{exp_name}[/]")
 
     save_path.mkdir(parents=True, exist_ok=True)
     if not getattr(cfg, "quiet", False):

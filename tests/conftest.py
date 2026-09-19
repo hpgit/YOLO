@@ -73,7 +73,7 @@ def solver(train_cfg: Config) -> Trainer:
     trainer = Trainer(
         accelerator="auto",
         max_epochs=getattr(train_cfg.task, "epoch", None),
-        precision="16-mixed",
+        precision="16-mixed" if torch.cuda.is_available() else "32-true",
         callbacks=callbacks,
         logger=loggers,
         log_every_n_steps=1,

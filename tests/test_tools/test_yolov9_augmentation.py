@@ -47,9 +47,7 @@ def _sample(value, class_id):
     image = np.full((40, 64, 3), value, dtype=np.uint8)
     image[8:25, 10:30] = (value, min(value + 20, 255), max(value - 20, 0))
     boxes = np.array([[class_id, 0.15, 0.2, 0.5, 0.7]], dtype=np.float32)
-    segments = [
-        np.array([[0.15, 0.2], [0.5, 0.2], [0.5, 0.7], [0.15, 0.7]], dtype=np.float32)
-    ]
+    segments = [np.array([[0.15, 0.2], [0.5, 0.2], [0.5, 0.7], [0.15, 0.7]], dtype=np.float32)]
     return image, boxes, segments
 
 
@@ -126,9 +124,7 @@ def test_mixed_polygon_and_empty_segment_keep_box_and_only_copy_real_polygon():
     ]
 
     random.seed(9)
-    warped, warped_labels = _random_perspective(
-        image.copy(), labels.copy(), segments, 0.0, 0.0, 0.0, 0.0, 0.0
-    )
+    warped, warped_labels = _random_perspective(image.copy(), labels.copy(), segments, 0.0, 0.0, 0.0, 0.0, 0.0)
     assert warped_labels[:, 0].tolist() == [3, 7]
     np.testing.assert_allclose(warped_labels[:, 1:], labels[:, 1:], atol=1e-5)
 
@@ -165,9 +161,7 @@ def test_empty_labels_support_mosaic_mixup_and_albumentations():
 def test_forced_flips_transform_normalized_xyxy():
     image = np.arange(16 * 16 * 3, dtype=np.uint8).reshape(16, 16, 3)
     boxes = np.array([[2, 0.1, 0.2, 0.7, 0.6]], dtype=np.float32)
-    augmentation = YOLOv9Augmentation(
-        16, **_disabled_hyp(flipud=1.0, fliplr=1.0)
-    )
+    augmentation = YOLOv9Augmentation(16, **_disabled_hyp(flipud=1.0, fliplr=1.0))
 
     output, output_boxes, _ = augmentation(image, boxes)
 

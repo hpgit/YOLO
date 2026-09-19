@@ -24,7 +24,8 @@ from torch.utils.data import Dataset
 
 from yolo.tools.data_conversion import discretize_categories
 from yolo.tools.yolov9_augmentation import YOLOv9Augmentation
-from yolo.utils.annotation_utils import parse_coco_bbox, parse_yolo_label, polygon_area as _polygon_area
+from yolo.utils.annotation_utils import parse_coco_bbox, parse_yolo_label
+from yolo.utils.annotation_utils import polygon_area as _polygon_area
 from yolo.utils.dataset_utils import normalize_dataset_inputs
 from yolo.utils.parquet_utils import (
     load_parquet_annotations,
@@ -32,7 +33,6 @@ from yolo.utils.parquet_utils import (
     resolve_annotation_image_path,
     resolve_parquet_annotation,
 )
-
 
 BoxArray = np.ndarray
 SegmentList = List[np.ndarray]
@@ -81,7 +81,10 @@ class YOLOv9Dataset(Dataset):
         parquet_path = resolve_parquet_annotation(self.dataset_path, phase_name)
         if parquet_path is not None:
             samples = load_parquet_annotations(
-                parquet_path, self.dataset_path, self.class_num, split=parquet_split_name(phase_name),
+                parquet_path,
+                self.dataset_path,
+                self.class_num,
+                split=parquet_split_name(phase_name),
             )
             paths, boxes = zip(*samples)
             # Pseudo boxes do not contain real contours for Copy-Paste.
@@ -163,9 +166,7 @@ class YOLOv9Dataset(Dataset):
 
     def _load_txt_directory(self, images_path: Path) -> Tuple[List[Path], List[BoxArray], List[SegmentList]]:
         image_paths = [
-            path
-            for path in images_path.iterdir()
-            if path.is_file() and path.suffix.lower() in self._IMAGE_SUFFIXES
+            path for path in images_path.iterdir() if path.is_file() and path.suffix.lower() in self._IMAGE_SUFFIXES
         ]
         return self._load_txt_images(image_paths)
 
@@ -207,9 +208,7 @@ class YOLOv9Dataset(Dataset):
                 line = raw_line.strip()
                 if not line:
                     continue
-                box, segment = parse_yolo_label(
-                    line.split(), f"{label_path}:{line_number}", self.class_num
-                )
+                box, segment = parse_yolo_label(line.split(), f"{label_path}:{line_number}", self.class_num)
                 boxes.append(box)
                 segments.append(segment)
 

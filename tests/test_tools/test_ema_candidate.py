@@ -50,9 +50,7 @@ def test_foreach_ema_is_exact_across_multiple_steps(dtype):
                 dtype=dtype,
                 requires_grad=True,
             ),
-            bias=torch.tensor(
-                [step + 0.5, -step * 0.75, step / 3], dtype=dtype, requires_grad=True
-            ),
+            bias=torch.tensor([step + 0.5, -step * 0.75, step / 3], dtype=dtype, requires_grad=True),
             num_batches_tracked=torch.tensor(7 + step, dtype=torch.int64),
         )
 

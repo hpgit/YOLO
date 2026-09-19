@@ -87,7 +87,9 @@ def organize_annotations_by_image(data: Dict[str, Any], id_to_idx: Optional[Dict
         image_id = anno["image_id"]
         if id_to_idx:
             if anno["category_id"] not in id_to_idx:
-                raise ValueError(f"Unknown COCO category_id {anno['category_id']!r} at COCO annotation {anno.get('id')}")
+                raise ValueError(
+                    f"Unknown COCO category_id {anno['category_id']!r} at COCO annotation {anno.get('id')}"
+                )
             anno["category_id"] = id_to_idx[anno["category_id"]]
         if image_id not in annotation_lookup:
             annotation_lookup[image_id] = []

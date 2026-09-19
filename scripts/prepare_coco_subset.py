@@ -1,9 +1,10 @@
 """Create a reproducible COCO 1/20 subset without copying image contents."""
+
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import random
+from pathlib import Path
 
 
 def prepare(source, output, seed=10, denominator=20):
@@ -16,7 +17,10 @@ def prepare(source, output, seed=10, denominator=20):
         raw = annotation_path.read_bytes()
         data = json.loads(raw)
         images = sorted(data["images"], key=lambda item: item["id"])
-        chosen = sorted(random.Random(f"{seed}:{split}").sample(images, max(1, len(images) // denominator)), key=lambda item: item["id"])
+        chosen = sorted(
+            random.Random(f"{seed}:{split}").sample(images, max(1, len(images) // denominator)),
+            key=lambda item: item["id"],
+        )
         ids = {item["id"] for item in chosen}
         annotations = [item for item in data["annotations"] if item["image_id"] in ids]
         image_dir = output / "images" / split
@@ -44,14 +48,22 @@ def prepare(source, output, seed=10, denominator=20):
             raise ValueError(f"Existing annotations differ: {dest}; choose a new output")
         dest.write_text(content)
         manifest["splits"][split] = {
-            "source_images": len(images), "images": len(chosen), "annotations": len(annotations),
-            "image_ids": sorted(ids), "source_annotations_sha256": hashlib.sha256(raw).hexdigest(),
+            "source_images": len(images),
+            "images": len(chosen),
+            "annotations": len(annotations),
+            "image_ids": sorted(ids),
+            "source_annotations_sha256": hashlib.sha256(raw).hexdigest(),
             "subset_annotations_sha256": hashlib.sha256(content.encode()).hexdigest(),
         }
     train_ids = set(manifest["splits"]["train2017"]["image_ids"])
     assert train_ids.isdisjoint(manifest["splits"]["val2017"]["image_ids"])
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(json.dumps({key: {k: v for k, v in value.items() if k != "image_ids"} for key, value in manifest["splits"].items()}, indent=2))
+    print(
+        json.dumps(
+            {key: {k: v for k, v in value.items() if k != "image_ids"} for key, value in manifest["splits"].items()},
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

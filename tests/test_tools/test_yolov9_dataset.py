@@ -51,8 +51,7 @@ def test_txt_split_preserves_real_segments_and_box_only_entries(tmp_path):
     label_path = tmp_path / "labels" / "train" / "mixed.txt"
     label_path.parent.mkdir(parents=True)
     label_path.write_text(
-        "1 0.5 0.5 0.5 0.5\n"
-        "0 0.125 0.25 0.375 0.25 0.375 0.75 0.125 0.75\n",
+        "1 0.5 0.5 0.5 0.5\n" "0 0.125 0.25 0.375 0.25 0.375 0.75 0.125 0.75\n",
         encoding="utf-8",
     )
 

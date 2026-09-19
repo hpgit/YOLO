@@ -77,7 +77,10 @@ class QuietSummaryTestModel(ProgressTestModel):
         value = batch[0].mean() + self.current_epoch
         self.log_dict(
             {f"Loss/{name}Loss": value * scale for name, scale in (("Box", 1), ("DFL", 2), ("BCE", 3))},
-            on_step=True, on_epoch=True, batch_size=len(batch[0]), logger=False,
+            on_step=True,
+            on_epoch=True,
+            batch_size=len(batch[0]),
+            logger=False,
         )
         return self.layer(batch[0]).square().mean()
 
@@ -94,13 +97,19 @@ def test_quiet_summary_epoch_averages_after_validation(tmp_path, capsys, validat
     result_path = tmp_path / "result.log"
     result_path.write_text("previous run\n", encoding="utf-8")
     trainer = Trainer(
-        accelerator="cpu", devices=1, max_epochs=2,
-        callbacks=[YOLOQuietEpochSummary(result_path)], logger=False,
-        enable_progress_bar=False, enable_checkpointing=False, enable_model_summary=False,
-        num_sanity_val_steps=2, check_val_every_n_epoch=validation_interval,
+        accelerator="cpu",
+        devices=1,
+        max_epochs=2,
+        callbacks=[YOLOQuietEpochSummary(result_path)],
+        logger=False,
+        enable_progress_bar=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        num_sanity_val_steps=2,
+        check_val_every_n_epoch=validation_interval,
         default_root_dir=tmp_path,
     )
-    loader = DataLoader(TensorDataset(torch.tensor([[1., 1.], [3., 3.], [5., 5.]])), batch_size=2)
+    loader = DataLoader(TensorDataset(torch.tensor([[1.0, 1.0], [3.0, 3.0], [5.0, 5.0]])), batch_size=2)
     trainer.fit(QuietSummaryTestModel(), train_dataloaders=loader, val_dataloaders=loader)
 
     lines = capsys.readouterr().out.splitlines()
@@ -125,10 +134,15 @@ def test_setup_selects_summary_only_when_quiet(tmp_path, monkeypatch, quiet):
     monkeypatch.setattr(logging_utils, "validate_log_directory", lambda *args: tmp_path)
     monkeypatch.setattr(logging_utils.logger, "setLevel", lambda *args: None)
     monkeypatch.setattr(logging_utils.wandb.errors.term, "_log", lambda *args, **kwargs: None)
-    cfg = OmegaConf.create({
-        "task": {"task": "train", "data": {}}, "name": "quiet-test",
-        "quiet": quiet, "use_tensorboard": False, "use_wandb": False,
-    })
+    cfg = OmegaConf.create(
+        {
+            "task": {"task": "train", "data": {}},
+            "name": "quiet-test",
+            "quiet": quiet,
+            "use_tensorboard": False,
+            "use_wandb": False,
+        }
+    )
 
     callbacks, loggers, _ = logging_utils.setup(cfg)
 
@@ -145,8 +159,11 @@ def test_quiet_summary_times_exclude_validation(tmp_path, monkeypatch, capsys, i
     times = iter([10.0, 16.0, 19.0, 21.0])
     monkeypatch.setattr(logging_utils, "perf_counter", lambda: next(times))
     trainer = SimpleNamespace(
-        sanity_checking=False, state=SimpleNamespace(fn="fit"),
-        current_epoch=0, callback_metrics={}, is_global_zero=is_global_zero,
+        sanity_checking=False,
+        state=SimpleNamespace(fn="fit"),
+        current_epoch=0,
+        callback_metrics={},
+        is_global_zero=is_global_zero,
     )
     result_path = tmp_path / "result.log"
     summary = YOLOQuietEpochSummary(result_path)

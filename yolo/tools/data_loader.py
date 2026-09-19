@@ -75,7 +75,10 @@ class YoloDataset(Dataset):
             # replaced pseudo-labels cannot be hidden by an old .pache cache.
             data = []
             for image_path, boxes in load_parquet_annotations(
-                parquet_path, dataset_path, self.class_num, split=parquet_split_name(phase_name),
+                parquet_path,
+                dataset_path,
+                self.class_num,
+                split=parquet_split_name(phase_name),
             ):
                 boxes[:, 1:] = np.clip(boxes[:, 1:], 0.0, 1.0)
                 if self.dynamic_shape:

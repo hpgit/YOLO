@@ -30,10 +30,16 @@ def image_configs(tmp_path):
     for index in range(16):
         Image.fromarray(rng.integers(0, 256, (48, 64, 3), dtype=np.uint8)).save(images / f"{index:02}.png")
         (labels / f"{index:02}.txt").write_text("0 0.2 0.2 0.8 0.2 0.8 0.8 0.2 0.8\n")
-    return OmegaConf.create({
-        "shuffle": True, "batch_size": 4, "cpu_num": 0, "pin_memory": False,
-        "image_size": [64, 64], "data_augment": {},
-    }), OmegaConf.create({"path": str(tmp_path), "train": "train", "validation": "train", "class_num": 1})
+    return OmegaConf.create(
+        {
+            "shuffle": True,
+            "batch_size": 4,
+            "cpu_num": 0,
+            "pin_memory": False,
+            "image_size": [64, 64],
+            "data_augment": {},
+        }
+    ), OmegaConf.create({"path": str(tmp_path), "train": "train", "validation": "train", "class_num": 1})
 
 
 def _epoch(loader):
@@ -219,8 +225,10 @@ class SeededTrainingModel(LightningModule):
         return torch.optim.SGD(self.parameters(), lr=0.01)
 
     def on_train_end(self):
-        torch.save({"records": self.records, "weights": self.layer.state_dict()},
-                   self.output_dir / f"rank-{self.global_rank}.pt")
+        torch.save(
+            {"records": self.records, "weights": self.layer.state_dict()},
+            self.output_dir / f"rank-{self.global_rank}.pt",
+        )
 
 
 @pytest.mark.parametrize("devices", [1, 2])
@@ -241,10 +249,17 @@ def test_lightning_training_repeats_with_seed_including_ddp(image_configs, monke
         output.mkdir()
         model = SeededTrainingModel(create_dataloader(data_cfg, dataset_cfg), output)
         trainer = Trainer(
-            accelerator="cpu", devices=devices, max_epochs=2, precision="64-true",
+            accelerator="cpu",
+            devices=devices,
+            max_epochs=2,
+            precision="64-true",
             strategy=DDPStrategy(process_group_backend="gloo", start_method="spawn") if devices == 2 else "auto",
-            logger=False, enable_checkpointing=False, enable_progress_bar=False,
-            enable_model_summary=False, deterministic=True, default_root_dir=output,
+            logger=False,
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            deterministic=True,
+            default_root_dir=output,
         )
         trainer.fit(model)
         return [torch.load(output / f"rank-{rank}.pt", weights_only=True) for rank in range(devices)]
@@ -256,8 +271,7 @@ def test_lightning_training_repeats_with_seed_including_ddp(image_configs, monke
             assert torch.equal(weights, repeated[rank]["weights"][name])
     for epoch in range(2):
         rank_paths = [
-            [path for current, paths, _ in result["records"] if current == epoch for path in paths]
-            for result in first
+            [path for current, paths, _ in result["records"] if current == epoch for path in paths] for result in first
         ]
         all_paths = sum(rank_paths, [])
         assert len(all_paths) == len(set(all_paths)) == 16

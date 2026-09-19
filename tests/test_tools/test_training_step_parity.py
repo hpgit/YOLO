@@ -20,7 +20,6 @@ from torch.utils.data import DataLoader, TensorDataset
 from yolo.tools.solver import TrainModel
 from yolo.utils.model_utils import EMA
 
-
 _INPUTS = torch.tensor(
     [
         [1.0, -1.0],
