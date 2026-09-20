@@ -31,6 +31,10 @@ data:
       copy_paste: 0.3
       # Pin the upstream-compatible package API in requirements.txt.
       albumentations: true
+      # Mild motion blur, applied after geometry/photometric transforms.
+      motion_blur: 0.1
+      motion_blur_kernel_size: 3
+      motion_blur_strength: 0.5
 
 optimizer:
   type: SGD

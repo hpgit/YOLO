@@ -54,6 +54,8 @@ def test_default_recipe_uses_polygon_dataset_and_uncapped_collation(tmp_path):
     cfg = _config()
     cfg.dataset.path = str(tmp_path)
     cfg.dataset.auto_download = None
+    blur = cfg.task.data.data_augment.YOLOv9
+    assert (blur.motion_blur, blur.motion_blur_kernel_size, blur.motion_blur_strength) == (0.1, 3, 0.5)
     loader = create_dataloader(cfg.task.data, cfg.dataset, "train")
     assert isinstance(loader.dataset, YOLOv9Dataset)
     assert loader.dataset.img_paths == [image_path]

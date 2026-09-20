@@ -4,6 +4,8 @@
 [`hyp.scratch-high.yaml`](https://github.com/WongKinYiu/yolov9/blob/5b1ea9a8b3f0ffe4fe0e203ec6232d788bb3fcff/data/hyps/hyp.scratch-high.yaml)을
 따르는 `data_augment.YOLOv9` recipe를 사용한다. 요청에 따라 **학습 마지막 구간의 mosaic 종료는 적용하지 않는다.**
 설정된 mosaic 확률은 마지막 epoch까지 유지된다. 원본 소스를 프로젝트에 복사하지 않고 동작을 독립적으로 구현했다.
+현재 기본 학습 설정에는 요청에 따라 약한 motion blur도 추가되어 있다. 원본 증강과의
+parity 비교에서는 아래 motion blur를 비활성화한다.
 
 | 항목 | 기본값 |
 | --- | --- |
@@ -14,6 +16,7 @@
 | mosaic / MixUp | 1.0 / 0.15 |
 | segment copy-paste 비율 | 0.3 |
 | MixUp 분포 | Beta(32, 32) |
+| Motion blur 확률 / 커널 / 혼합 강도 | 0.1 / 3×3 / 0.5 |
 
 Copy-paste의 0.3은 모든 이미지에 대한 30% gate가 아니라, 뒤집은 박스와 기존 박스의 IOA가
 모두 0.3 미만인 후보 중 `round(0.3 × 후보 수)`를 선택하는 비율이다. 실제 polygon이 있는 객체만
@@ -27,6 +30,8 @@ Copy-paste의 0.3은 모든 이미지에 대한 30% gate가 아니라, 뒤집은
 3. MixUp 분기에서는 별도로 만든 두 번째 mosaic과 Beta(32,32) 비율로 섞고 라벨을 합친다.
 4. Mosaic를 쓰지 않는 분기에서는 letterbox 후 기하 변환을 적용한다.
 5. 선택적 Albumentations 이후 HSV와 상하/좌우 반전을 적용한다.
+6. 확률 0.1로 motion blur를 적용한다. 수평·수직·두 대각선 중 한 방향의 중심 대칭
+   3픽셀 커널로 흐리게 한 결과를 원본과 50:50으로 혼합한다. 이미지 크기와 라벨은 유지한다.
 
 기하 변환에는 segment resampling, 경계 clipping, 변환 후 작은 박스·낮은 잔존 면적·과도한 종횡비
 제거가 포함된다. RGB float tensor와 pixel xyxy 학습 라벨로 반환하며, 학습용 변환 결과에
@@ -51,7 +56,22 @@ Mosaic/MixUp으로 객체가 늘어날 수 있으므로 이 recipe의 batch coll
 BGR 입력 조건과 확률 0인 변환들의 난수 소비도 유지한다. 패키지가 없으면 조용히 생략하지 않고
 설치 오류를 알린다. 선택적으로 `albumentations: false`를 설정할 수 있다.
 
+Motion blur는 Albumentations 설정과 독립적으로 동작하며, 최종 학습 해상도에서 한 번 적용한다.
+`task.data.data_augment.YOLOv9.motion_blur=0`으로 끌 수 있다.
+`motion_blur_kernel_size`는 3 이상의 홀수, `motion_blur_strength`는 0~1이다.
+확률이나 강도가 0이면 이미지와 난수 상태를 그대로 유지한다. 직접 `YOLOv9Augmentation`을
+생성할 때는 기존 원본 비교를 위해 motion blur가 기본적으로 꺼져 있고, `train.yaml`에서 켠다.
+기존 legacy 증강 설정에서는 `data_augment: {MotionBlur: 0.1}`로 같은 약한 기본값을 사용할 수 있다.
+legacy 경로에서는 다른 변환처럼 최종 PadAndResize 전에 적용된다.
+
 ## 검증
+
+2026-09-20 motion blur 검증: 방향별 픽셀 변화·중심 대칭·라벨 보존·비활성화 시 난수 보존과
+legacy/YOLOv9의 worker 0/2 재현성을 확인했다. 기본 확률 0.1로 COCO val2017 일부를 사용한
+v9-t / 128px / batch 4 / CUDA AMP 20배치 진단에서 80장 중 8장에 적용되었다.
+loss와 가중치는 유한했고 가중치 갱신도 확인했다. optimizer 시도 10회 중 성공 3회,
+AMP skip 7회였다. 결과는 `runs/train/motion-blur-smoke-20260920/verification.json`에 있다.
+이는 실행 경로 진단이며 AP 개선이나 장기 학습 성능 검증은 아니다.
 
 원본 비교 스크립트는 별도로 준비된 upstream checkout의 고정 commit에서 함수들을 읽는다.
 원본 코드를 저장소나 테스트에 포함하지 않는다. 동일한 입력 및 Python/NumPy 난수 상태에서

@@ -57,7 +57,11 @@ def _epoch(loader):
 def test_shuffle_and_augmented_batches_repeat_across_runs(image_configs, workers, recipe):
     data_cfg, dataset_cfg = image_configs
     data_cfg.cpu_num = workers
-    data_cfg.data_augment = {"YOLOv9": {"mixup": 1.0}} if recipe == "yolov9" else {"HorizontalFlip": 0.5}
+    data_cfg.data_augment = (
+        {"YOLOv9": {"mixup": 1.0, "motion_blur": 0.5}}
+        if recipe == "yolov9"
+        else {"HorizontalFlip": 0.5, "MotionBlur": 0.5}
+    )
 
     def run(seed):
         set_seed(seed)

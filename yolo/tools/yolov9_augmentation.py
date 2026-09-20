@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import torch
 
+from yolo.tools.motion_blur import MotionBlur
+
 Sample = Tuple[np.ndarray, np.ndarray, Sequence[np.ndarray]]
 SampleGetter = Callable[[int], object]
 
@@ -33,6 +35,10 @@ _DEFAULT_HYP = {
     "mixup": 0.15,
     "copy_paste": 0.3,
     "albumentations": True,
+    # Opt in through train.yaml; direct callers retain upstream parity.
+    "motion_blur": 0.0,
+    "motion_blur_kernel_size": 3,
+    "motion_blur_strength": 0.5,
 }
 
 
@@ -331,6 +337,11 @@ class YOLOv9Augmentation:
         for name in ("hsv_h", "hsv_s", "hsv_v", "degrees", "translate", "scale", "shear", "perspective"):
             settings[name] = float(settings[name])
         self.hyp = settings
+        self.motion_blur = MotionBlur(
+            prob=settings["motion_blur"],
+            kernel_size=settings["motion_blur_kernel_size"],
+            strength=settings["motion_blur_strength"],
+        )
         self._albumentations = self._make_albumentations(bool(settings["albumentations"]), self.image_size)
 
     @staticmethod
@@ -552,6 +563,7 @@ class YOLOv9Augmentation:
             if len(labels):
                 labels[:, [1, 3]] = 1 - labels[:, [3, 1]]
 
+        image, labels = self.motion_blur(image, labels)
         image_tensor = torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))).to(torch.float32).div_(255.0)
         boxes_tensor = torch.from_numpy(np.ascontiguousarray(labels, dtype=np.float32))
         reverse = torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0], dtype=torch.float32)
