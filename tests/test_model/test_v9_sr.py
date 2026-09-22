@@ -87,6 +87,17 @@ def test_sr_config_forward_backward_optimizer_and_ema(size):
             name = next(iter(layer))
             if name in {"AConv", "ADown"}:
                 layer[name + "2"] = layer.pop(name)
+            if size == "m":
+                args = next(iter(layer.values())).get("args", {})
+                for key in ("out_channels", "part_channels"):
+                    value = args.get(key)
+                    widths = {184: 192, 240: 256, 360: 384}
+                    if key == "part_channels":
+                        widths[480] = 512
+                    if isinstance(value, list):
+                        args[key] = [widths.get(channel, channel) for channel in value]
+                    elif value is not None:
+                        args[key] = widths.get(value, value)
     assert OmegaConf.to_container(cfg.model) == expected
 
     model = create_model(cfg.model, class_num=3, weight_path=None).train()
@@ -129,6 +140,49 @@ def test_sr_config_forward_backward_optimizer_and_ema(size):
     ema.on_validation_start(None, module)
     ema_fixed = [layer.weight for layer in module.ema.modules() if isinstance(layer, FixedKernelConv2d)]
     assert all(torch.equal(actual, expected) for actual, expected in zip(ema_fixed, fixed))
+
+
+@pytest.mark.parametrize("class_num", [3, 80])
+def test_sr_m_convolution_inputs_are_aligned_without_shrinking(class_num):
+    model = create_model(OmegaConf.load(CONFIG_ROOT / "v9-sr-m.yaml"), class_num=class_num, weight_path=None).eval()
+    original = create_model(OmegaConf.load(CONFIG_ROOT / "v9-m.yaml"), class_num=class_num, weight_path=None)
+    original_convs = {name: module for name, module in original.named_modules() if isinstance(module, nn.Conv2d)}
+    observed = {}
+    handles = []
+
+    def record_input(name):
+        def hook(module, inputs):
+            observed[name] = inputs[0].shape[1]
+
+        return hook
+
+    rgb_stems = {f"model.{index}.conv" for index, layer in enumerate(model.model) if layer.source == 0}
+    assert len(rgb_stems) == 2  # Main and AUX RGB stems.
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            baseline = original_convs.pop(name)
+            assert module.in_channels >= baseline.in_channels, name
+            assert module.out_channels >= baseline.out_channels, name
+            if name in rgb_stems:
+                assert module.in_channels == 3
+            else:
+                assert module.in_channels % 32 == 0, (name, module.in_channels)
+            handles.append(module.register_forward_pre_hook(record_input(name)))
+        elif isinstance(module, FixedKernelConv2d):
+            assert module.groups % 32 == 0, name
+            handles.append(module.register_forward_pre_hook(record_input(name)))
+        elif isinstance(module, nn.Conv3d):
+            assert name.endswith("anc2vec.anc2vec") and module.in_channels == 16
+    assert not original_convs
+
+    try:
+        with torch.no_grad():
+            model(torch.randn(1, 3, 64, 96))
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert len(observed) == len(handles)
+    assert all(channels == 3 if name in rgb_stems else channels % 32 == 0 for name, channels in observed.items())
 
 
 def test_sr_activation_does_not_change_original_model_defaults():
