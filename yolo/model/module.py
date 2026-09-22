@@ -381,6 +381,47 @@ class ADown(nn.Module):
         return torch.cat((x1, x2), dim=1)
 
 
+class FixedKernelConv2d(nn.Module):
+    """Channel-wise 3x3 smoothing, stride 1 and zero padding 1, without BN/activation.
+
+    The kernel is a non-persistent buffer: optimizers and model.requires_grad_()
+    cannot unfreeze it, and EMA/checkpoint loading cannot alter its coefficients.
+    It is recreated on construction and follows module device/dtype conversions.
+    """
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.groups = channels
+        kernel = torch.tensor([[5, 27, 5], [27, 127, 27], [5, 27, 5]], dtype=torch.float32) / 255
+        self.register_buffer("weight", kernel.view(1, 1, 3, 3).repeat(channels, 1, 1, 1), persistent=False)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return F.conv2d(x, self.weight, stride=1, padding=1, groups=self.groups)
+
+
+class AConv2(AConv):
+    """AConv with fixed 3x3 smoothing in place of average pooling.
+
+    Retains the avg_pool attribute for the shared forward path. Output spatial
+    dimensions are ceil(H/2), ceil(W/2), including for odd input sizes.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__(in_channels, out_channels)
+        self.avg_pool = FixedKernelConv2d(in_channels)
+
+
+class ADown2(ADown):
+    """ADown with fixed 3x3 smoothing; the max-pooling branch is preserved.
+
+    Like AConv2, output spatial dimensions are ceil(H/2), ceil(W/2).
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__(in_channels, out_channels)
+        self.avg_pool = FixedKernelConv2d(in_channels)
+
+
 class CBLinear(nn.Module):
     """Convolutional block that outputs multiple feature maps split along the channel dimension."""
 

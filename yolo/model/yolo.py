@@ -7,9 +7,10 @@ from omegaconf import ListConfig, OmegaConf
 from torch import nn
 
 from yolo.config.config import ModelConfig, YOLOLayer
+from yolo.model.module import Conv, RepConv
 from yolo.tools.dataset_preparation import prepare_weight
 from yolo.utils.logger import logger
-from yolo.utils.module_utils import get_layer_map
+from yolo.utils.module_utils import create_activation_function, get_layer_map
 
 
 class YOLO(nn.Module):
@@ -29,6 +30,13 @@ class YOLO(nn.Module):
         self.model: List[YOLOLayer] = nn.ModuleList()
         self.reg_max = getattr(model_cfg.anchor, "reg_max", 16)
         self.build_model(model_cfg.model)
+        activation = getattr(model_cfg, "activation", None)
+        if activation is not None:
+            # Include nested backbone/neck and Main/AUX head convolutions, while
+            # preserving the linear branches inside RepConv for deploy fusion.
+            for module in self.modules():
+                if isinstance(module, (Conv, RepConv)) and not isinstance(module.act, nn.Identity):
+                    module.act = create_activation_function(activation)
 
     def build_model(self, model_arch: Dict[str, List[Dict[str, Dict[str, Dict]]]]):
         self.layer_index = {}

@@ -29,6 +29,7 @@ class ModelConfig:
     name: Optional[str]
     anchor: AnchorConfig
     model: Dict[str, BlockConfig]
+    activation: Optional[str] = None
 
 
 @dataclass
