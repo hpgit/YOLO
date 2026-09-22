@@ -4,6 +4,10 @@ hydra:
 
 name: v9-dev
 
+# Dual assignment training and suppression-free inference for YOLOv9 detection.
+model:
+  nms_free: false
+
 defaults:
   - _self_
   - task: inference

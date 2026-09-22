@@ -3,7 +3,7 @@
 
 Requires numpy, Pillow and onnxruntime (opencv-python-headless for video/webcam).
 Run: python onnx_inference.py --model model.onnx --source image.jpg --output results
-New exports carry decoder metadata. For older exports supply --class-num and,
+New exports carry decoder and NMS-free postprocessing metadata. For older exports supply --class-num and,
 if needed, --output-format, --reg-max and --strides. No PyTorch or YOLO imports.
 """
 
@@ -50,6 +50,27 @@ def class_aware_nms(boxes, scores, confidence=0.5, iou_threshold=0.5, max_detect
     return detections[np.argsort(-detections[:, 5], kind="stable")[:max_detections]]
 
 
+def nms_free_topk(boxes, scores, confidence=0.5, max_detections=300):
+    """Best class per anchor and stable score top-k; never suppress overlaps.
+
+    Scores are probabilities from a one-to-one trained head. Returns float32
+    rows [class_id, x1, y1, x2, y2, score] in descending confidence order.
+    """
+    if not 0 <= confidence <= 1 or max_detections < 1:
+        raise ValueError("Confidence must be in [0,1] and max_detections must be positive.")
+    class_ids = scores.argmax(axis=-1)
+    best_scores = scores[np.arange(len(scores)), class_ids]
+    valid = (
+        np.isfinite(boxes).all(axis=1)
+        & (boxes[:, 2:] > boxes[:, :2]).all(axis=1)
+        & np.isfinite(best_scores)
+        & (best_scores > confidence)
+    )
+    indices = np.flatnonzero(valid)
+    indices = indices[np.argsort(-best_scores[indices], kind="stable")[:max_detections]]
+    return np.column_stack((class_ids[indices], boxes[indices], best_scores[indices])).astype(np.float32)
+
+
 class ONNXDetector:
     """Float32 NCHW ONNX runtime and CPU NumPy postprocessing.
 
@@ -72,6 +93,7 @@ class ONNXDetector:
         iou_threshold=0.5,
         max_detections=300,
         threads=0,
+        nms_free=False,
     ):
         try:
             import onnxruntime as ort
@@ -112,6 +134,15 @@ class ONNXDetector:
         metadata = json.loads(props.get("yolo.inference", "{}"))
         if metadata and metadata.get("version") != 1:
             raise ValueError("Unsupported yolo.inference metadata version.")
+        self.nms_free = metadata.get("nms_free", nms_free)
+        if not isinstance(self.nms_free, bool):
+            raise ValueError("nms_free must be a boolean in ONNX metadata or fallback arguments.")
+        postprocess = metadata.get("postprocess", "topk" if self.nms_free else "nms")
+        if postprocess not in ("topk", "nms"):
+            raise ValueError("Unsupported ONNX postprocess method; expected topk or nms.")
+        if "nms_free" in metadata and (postprocess == "topk") != self.nms_free:
+            raise ValueError("ONNX nms_free and postprocess metadata disagree.")
+        self.nms_free = postprocess == "topk"
         self.class_num = metadata.get("class_num", class_num)
         if not isinstance(self.class_num, int) or self.class_num < 1:
             raise ValueError("ONNX has no decoder metadata; supply class_num / --class-num from the export dataset.")
@@ -202,9 +233,12 @@ class ONNXDetector:
         tensors, transforms = zip(*(self.preprocess(image) for image in images))
         results = []
         for prediction, transform in zip(self(np.stack(tensors)), transforms):
-            detections = class_aware_nms(
-                prediction[:, :4], prediction[:, 4:], self.confidence, self.iou_threshold, self.max_detections
-            )
+            if self.nms_free:
+                detections = nms_free_topk(prediction[:, :4], prediction[:, 4:], self.confidence, self.max_detections)
+            else:
+                detections = class_aware_nms(
+                    prediction[:, :4], prediction[:, 4:], self.confidence, self.iou_threshold, self.max_detections
+                )
             sx, sy, left, top, width, height = transform
             detections[:, [1, 3]] = np.clip((detections[:, [1, 3]] - left) / sx, 0, width)
             detections[:, [2, 4]] = np.clip((detections[:, [2, 4]] - top) / sy, 0, height)
@@ -300,6 +334,9 @@ def main():
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--iou", type=float, default=0.5)
     parser.add_argument("--max-detections", type=int, default=300)
+    parser.add_argument(
+        "--nms-free", action="store_true", help="Fallback for one-to-one exports without postprocessing metadata"
+    )
     parser.add_argument("--providers", nargs="+", default=["CPUExecutionProvider"])
     parser.add_argument("--threads", type=int, default=0, help="ONNX intra-op threads; 0 uses runtime default")
     parser.add_argument("--class-num", type=int, help="Required for old exports without metadata")
@@ -318,6 +355,7 @@ def main():
         iou_threshold=args.iou,
         max_detections=args.max_detections,
         threads=args.threads,
+        nms_free=args.nms_free,
     )
     count = run_inference(detector, args.source, args.output)
     print(f"Processed {count} frames; saved results to {args.output}")

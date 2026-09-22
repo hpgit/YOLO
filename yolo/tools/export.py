@@ -1,4 +1,4 @@
-"""Export detection models with one pre-NMS output and rank <= 4 tensors."""
+"""Export detection models with one unfiltered output and rank <= 4 tensors."""
 
 import json
 from copy import deepcopy
@@ -60,7 +60,8 @@ class ExportModel(nn.Module):
     return decoded [B, N, 4 + classes], pixel xyxy followed by class scores.
     Anchor-based YOLOv7 heads always use the decoded contract.
 
-    Only Main detections are exported. No confidence filtering, top-k, NMS,
+    NMS-free models export only their one-to-one Main detections.
+    No confidence filtering, top-k, NMS,
     clipping or inverse letterbox transform is performed.
     """
 
@@ -70,8 +71,10 @@ class ExportModel(nn.Module):
         main = next((layer for layer in self.model.model if layer.tags == "Main" and layer.output), None)
         if type(main) is not MultiheadDetection:
             raise ValueError("Export requires a detection model with a Main MultiheadDetection output.")
+        self.nms_free = getattr(self.model, "nms_free", False)
+        active_heads = main.one2one_heads if self.nms_free else main.heads
         self.probabilities = probabilities and all(
-            isinstance(getattr(head, "anc2vec", None), Anchor2Vec) for head in main.heads
+            isinstance(getattr(head, "anc2vec", None), Anchor2Vec) for head in active_heads
         )
         self.class_num = model.num_classes
         for module in list(self.model.modules()):
@@ -239,6 +242,8 @@ def export_model(cfg: Config) -> Path:
             "version": 1,
             "output_format": "dfl" if wrapper.probabilities else "xyxy",
             "class_num": wrapper.class_num,
+            "nms_free": wrapper.nms_free,
+            "postprocess": "topk" if wrapper.nms_free else "nms",
             "class_names": list(cfg.dataset.class_list) if len(cfg.dataset.class_list) == wrapper.class_num else [],
         }
         if wrapper.probabilities:

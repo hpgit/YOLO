@@ -30,6 +30,7 @@ class ModelConfig:
     anchor: AnchorConfig
     model: Dict[str, BlockConfig]
     activation: Optional[str] = None
+    nms_free: bool = False
 
 
 @dataclass
@@ -91,6 +92,7 @@ class LossConfig:
     objective: Dict[str, int]
     aux: Union[bool, float]
     matcher: MatcherConfig
+    one2one: float = 1.0
 
 
 @dataclass

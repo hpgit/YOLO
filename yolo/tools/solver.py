@@ -99,7 +99,9 @@ class ValidateModel(BaseModel):
         self.vec2box = create_converter(
             self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
         )
-        self.post_process = PostProcess(self.vec2box, self.validation_cfg.nms)
+        self.post_process = PostProcess(
+            self.vec2box, self.validation_cfg.nms, nms_free=getattr(self.model, "nms_free", False)
+        )
 
     def val_dataloader(self):
         return self.val_loader
@@ -203,10 +205,16 @@ class TrainModel(ValidateModel):
     def on_save_checkpoint(self, checkpoint):
         if hasattr(self.model, "qat_metadata"):
             checkpoint["qat"] = self.model.qat_metadata
+        checkpoint["nms_free"] = getattr(self.model, "nms_free", False)
         checkpoint["training_accumulation"] = {"last_opt_step": self._last_opt_step}
         checkpoint["training_optimizer"] = {"max_lr": getattr(self.trainer.optimizers[0], "max_lr", None)}
 
     def on_load_checkpoint(self, checkpoint):
+        saved_nms_free = checkpoint.get(
+            "nms_free", any(".one2one_heads." in key for key in checkpoint.get("state_dict", {}))
+        )
+        if saved_nms_free != getattr(self.model, "nms_free", False):
+            raise ValueError("Training checkpoint NMS-free structure does not match model.nms_free.")
         if checkpoint.get("qat") != getattr(self.model, "qat_metadata", None):
             raise ValueError("Training checkpoint QAT structure/profile does not match the model.")
         self._last_opt_step = checkpoint.get("training_accumulation", {}).get("last_opt_step", -1)
@@ -218,7 +226,11 @@ class TrainModel(ValidateModel):
         predicts = self(images)
         aux_predicts = self.vec2box(predicts["AUX"]) if "AUX" in predicts else None
         main_predicts = self.vec2box(predicts["Main"])
-        loss, loss_item = self.loss_fn(aux_predicts, main_predicts, targets)
+        if getattr(self.model, "nms_free", False):
+            one2one_predicts = self.vec2box(predicts["One2One"])
+            loss, loss_item = self.loss_fn(aux_predicts, main_predicts, targets, one2one_predicts=one2one_predicts)
+        else:
+            loss, loss_item = self.loss_fn(aux_predicts, main_predicts, targets)
         self.log_dict(
             loss_item,
             prog_bar=True,
@@ -258,7 +270,9 @@ class InferenceModel(BaseModel):
         self.vec2box = create_converter(
             self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
         )
-        self.post_process = PostProcess(self.vec2box, self.cfg.task.nms)
+        self.post_process = PostProcess(
+            self.vec2box, self.cfg.task.nms, nms_free=getattr(self.model, "nms_free", False)
+        )
 
     def predict_dataloader(self):
         return self.predict_loader

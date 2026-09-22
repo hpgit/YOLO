@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -126,7 +127,21 @@ class MultiheadDetection(nn.Module):
             [DetectionHead((in_channels[0], in_channel), num_classes, **head_kwargs) for in_channel in in_channels]
         )
 
-    def forward(self, x_list: List[torch.Tensor]) -> List[torch.Tensor]:
+    def enable_nms_free(self):
+        """Add an independent one-to-one head without changing legacy parameter names."""
+        if not all(isinstance(head, Detection) for head in self.heads):
+            raise ValueError("NMS-free detection requires YOLOv9 Detection heads.")
+        if not hasattr(self, "one2one_heads"):
+            self.one2one_heads = deepcopy(self.heads)
+
+    def forward(self, x_list: List[torch.Tensor]):
+        if hasattr(self, "one2one_heads"):
+            # The dense branch trains the shared backbone/neck. One-to-one loss
+            # trains its own predictors without conflicting backbone gradients.
+            one2one = [head(x.detach()) for x, head in zip(x_list, self.one2one_heads)]
+            if not self.training:
+                return one2one
+            return {"Main": [head(x) for x, head in zip(x_list, self.heads)], "One2One": one2one}
         return [head(x) for x, head in zip(x_list, self.heads)]
 
 

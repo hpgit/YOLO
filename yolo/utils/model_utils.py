@@ -23,6 +23,7 @@ from yolo.model.yolo import YOLO
 from yolo.utils.bounding_box_utils import Anc2Box, Vec2Box, bbox_nms, transform_bbox
 from yolo.utils.ema_utils import foreach_ema_update
 from yolo.utils.logger import logger
+from yolo.utils.nms_utils import select_nms_free_detections
 
 
 def lerp(start: float, end: float, step: Union[int, float], total: int = 1):
@@ -233,14 +234,12 @@ def get_device(device_spec: Union[str, int, List[int]]) -> torch.device:
 
 
 class PostProcess:
-    """
-    TODO: function document
-    scale back the prediction and do nms for pred_bbox
-    """
+    """Decode and restore detections, selecting NMS or one-to-one top-k."""
 
-    def __init__(self, converter: Union[Vec2Box, Anc2Box], nms_cfg: NMSConfig) -> None:
+    def __init__(self, converter: Union[Vec2Box, Anc2Box], nms_cfg: NMSConfig, *, nms_free: bool = False) -> None:
         self.converter = converter
         self.nms = nms_cfg
+        self.nms_free = nms_free
 
     def __call__(
         self, predict, rev_tensor: Optional[Tensor] = None, image_size: Optional[List[int]] = None
@@ -252,8 +251,10 @@ class PostProcess:
         pred_conf = prediction[3] if len(prediction) == 4 else None
         if rev_tensor is not None:
             pred_bbox = (pred_bbox - rev_tensor[:, None, 1:]) / rev_tensor[:, 0:1, None]
-        pred_bbox = bbox_nms(pred_class, pred_bbox, self.nms, pred_conf)
-        return pred_bbox
+        if self.nms_free:
+            scores = pred_class.sigmoid() * (1 if pred_conf is None else pred_conf)
+            return select_nms_free_detections(pred_bbox, scores, self.nms.min_confidence, self.nms.max_bbox)
+        return bbox_nms(pred_class, pred_bbox, self.nms, pred_conf)
 
 
 def collect_prediction(predict_json: List, local_rank: int) -> List:

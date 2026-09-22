@@ -45,6 +45,8 @@ optimizer:
     nesterov: true
 
 loss:
+  # Additional 1:1 head loss weight when model.nms_free=true.
+  one2one: 1.0
   objective:
     BCELoss: 0.5
     BoxLoss: 7.5

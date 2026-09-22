@@ -54,6 +54,8 @@ These are simple examples. For more customization details, please refer to [Note
 
 ## Training
 
+For optional one-to-one training and inference without NMS, see the [NMS-free guide (한국어)](docs/nms-free.md).
+
 For a reproducible COCO 1/20 subset and training/validation speed comparisons, see the [subset performance guide (한국어)](docs/performance-coco-subset.md).
 
 Named runs automatically resume their latest checkpoint when `weight` is omitted or `weight=False`.

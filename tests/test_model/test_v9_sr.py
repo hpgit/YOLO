@@ -82,6 +82,7 @@ def test_sr_config_forward_backward_optimizer_and_ema(size):
     expected = deepcopy(baseline)
     expected["name"] = f"v9-sr-{size}"
     expected["activation"] = "Hardswish"
+    expected["nms_free"] = False  # Common default; SR architecture still matches its source.
     for layers in expected["model"].values():
         for layer in layers:
             name = next(iter(layer))
