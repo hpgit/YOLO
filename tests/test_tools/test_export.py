@@ -191,7 +191,13 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
         np.testing.assert_allclose(
             actual[..., : 4 * reg_max].reshape(images.shape[0], 42, 4, reg_max).sum(-1), 1, atol=1e-6
         )
-        assert len([node for node in graph.graph.node if node.op_type == "Softmax"]) == 3
+        # Each head permutes L/T/R/B bins, normalizes, then flattens before concatenating.
+        softmax_nodes = [node for node in graph.graph.node if node.op_type == "Softmax"]
+        transpose_outputs = {output for node in graph.graph.node if node.op_type == "Transpose" for output in node.output}
+        reshape_inputs = {node.input[0] for node in graph.graph.node if node.op_type == "Reshape"}
+        assert len(softmax_nodes) == 12
+        assert all(node.input[0] in transpose_outputs for node in softmax_nodes)
+        assert all(node.output[0] in reshape_inputs for node in softmax_nodes)
         # DFL expectation and anchor/stride decoding must not leak into this graph.
         assert not any(
             "projection" in tensor.name or "anc2vec.weight" in tensor.name for tensor in graph.graph.initializer

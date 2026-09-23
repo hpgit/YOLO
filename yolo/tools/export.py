@@ -47,9 +47,12 @@ class ExportAnchorProbabilities(nn.Module):
     def forward(self, anchor_x):
         batch, _, height, width = anchor_x.shape
         logits = anchor_x.reshape(batch, 4, self.reg_max, height * width)
-        # [B, H*W, 4, R]: normalize each direction over its own bins.
-        probabilities = logits.permute(0, 3, 1, 2).softmax(dim=-1)
-        return logits, probabilities.flatten(2)
+        # Move each direction's bins behind the locations before normalizing them.
+        directions = anchor_x.split(self.reg_max, dim=1)
+        probabilities = torch.cat(
+            [direction.permute(0, 2, 3, 1).softmax(dim=-1).flatten(1, 2) for direction in directions], dim=-1
+        )
+        return logits, probabilities
 
 
 class ExportModel(nn.Module):
