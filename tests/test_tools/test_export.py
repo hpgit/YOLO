@@ -193,7 +193,9 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
         )
         # Each head permutes L/T/R/B bins, normalizes, then flattens before concatenating.
         softmax_nodes = [node for node in graph.graph.node if node.op_type == "Softmax"]
-        transpose_outputs = {output for node in graph.graph.node if node.op_type == "Transpose" for output in node.output}
+        transpose_outputs = {
+            output for node in graph.graph.node if node.op_type == "Transpose" for output in node.output
+        }
         reshape_inputs = {node.input[0] for node in graph.graph.node if node.op_type == "Reshape"}
         assert len(softmax_nodes) == 12
         assert all(node.input[0] in transpose_outputs for node in softmax_nodes)
