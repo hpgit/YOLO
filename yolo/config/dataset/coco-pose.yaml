@@ -1,0 +1,14 @@
+defaults:
+  - coco
+  - _self_
+
+# Official COCO person-keypoint annotations. The pose loader reads these JSON
+# files directly and does not create cache files under this path.
+class_num: 1
+class_list: [Person]
+pose: true
+num_keypoints: 17
+subset_seed: 10
+fraction:
+  train: 1.0
+  validation: 1.0

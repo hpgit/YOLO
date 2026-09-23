@@ -1,3 +1,4 @@
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -127,6 +128,60 @@ class MultiheadDetection(nn.Module):
         )
 
     def forward(self, x_list: List[torch.Tensor]) -> List[torch.Tensor]:
+        return [head(x) for x, head in zip(x_list, self.heads)]
+
+
+class PoseDetection(Detection):
+    """Detection and grid-relative coordinate distributions from shared FPN features.
+
+    Coordinate channels are ordered as ``(keypoint, xy, bin)``. The decoder
+    interprets the bins uniformly over ``[-pose_range, pose_range]`` in stride
+    units relative to the grid center. Visibility is an independent logit per
+    keypoint. No coordinate decoding or box-relative normalization occurs here.
+    """
+
+    def __init__(
+        self,
+        in_channels: Tuple[int, int],
+        num_classes: int,
+        *,
+        num_keypoints: int = 17,
+        pose_bins: int = 64,
+        pose_range: float = 32.0,
+        **head_kwargs,
+    ):
+        if not isinstance(num_keypoints, int) or isinstance(num_keypoints, bool) or num_keypoints < 1:
+            raise ValueError("num_keypoints must be a positive integer")
+        if not isinstance(pose_bins, int) or isinstance(pose_bins, bool) or pose_bins < 2:
+            raise ValueError("pose_bins must be an integer of at least 2")
+        if not math.isfinite(pose_range) or pose_range <= 0:
+            raise ValueError("pose_range must be finite and positive")
+        super().__init__(in_channels, num_classes, **head_kwargs)
+        self.num_keypoints = num_keypoints
+        self.pose_bins = pose_bins
+        self.pose_range = float(pose_range)
+        first_neck, input_channels = in_channels
+        pose_neck = max(first_neck // 4, num_keypoints * 3, 64)
+        self.pose_conv = nn.Sequential(Conv(input_channels, pose_neck, 3), Conv(pose_neck, pose_neck, 3))
+        self.pose_logits = nn.Conv2d(pose_neck, num_keypoints * 2 * pose_bins, 1)
+        self.visibility_conv = nn.Conv2d(pose_neck, num_keypoints, 1)
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        class_x, anchor_x, vector_x = super().forward(x)
+        pose_features = self.pose_conv(x)
+        return class_x, anchor_x, vector_x, self.pose_logits(pose_features), self.visibility_conv(pose_features)
+
+
+class MultiheadPose(nn.Module):
+    """Pose heads at each FPN scale with detection-compatible parameter paths."""
+
+    def __init__(self, in_channels: List[int], num_classes: int, **head_kwargs):
+        super().__init__()
+        self.heads = nn.ModuleList(
+            [PoseDetection((in_channels[0], channels), num_classes, **head_kwargs) for channels in in_channels]
+        )
+
+    def forward(self, x_list: List[Tensor]) -> List[Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]]:
         return [head(x) for x, head in zip(x_list, self.heads)]
 
 

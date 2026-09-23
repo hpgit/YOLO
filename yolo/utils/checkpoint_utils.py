@@ -37,6 +37,8 @@ class YOLOCheckpoint(ModelCheckpoint):
                     # the same weight-only format accepted by YOLO.save_load_weights.
                     detector = pl_module.ema
                     weights = {key: value.detach().cpu() for key, value in detector.model.state_dict().items()}
+                    if getattr(detector, "pose_config", None) is not None:
+                        weights = {"weights": weights, "pose_config": dict(detector.pose_config)}
                     destination = Path(self.dirpath) / "best.pt"
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     temporary = destination.with_suffix(".pt.tmp")

@@ -65,9 +65,7 @@ class EMA(Callback):
         else:
             # Callback checkpoint states can be loaded on CPU before strategy setup.
             current = pl_module.model.state_dict()
-            self.ema_state_dict = {
-                key: value.to(current[key]) for key, value in self.ema_state_dict.items()
-            }
+            self.ema_state_dict = {key: value.to(current[key]) for key, value in self.ema_state_dict.items()}
 
     def on_train_start(self, trainer, pl_module):
         self._initialize(pl_module)
@@ -247,6 +245,13 @@ class PostProcess:
             self.converter.update(image_size)
         prediction = self.converter(predict["Main"])
         pred_class, _, pred_bbox = prediction[:3]
+        if getattr(self.converter, "pose_config", None) is not None:
+            from yolo.utils.pose_utils import pose_nms, reverse_pose_coordinates
+
+            keypoints = prediction[5]
+            if rev_tensor is not None:
+                pred_bbox, keypoints = reverse_pose_coordinates(pred_bbox, keypoints, rev_tensor)
+            return pose_nms(pred_class, pred_bbox, keypoints, self.nms)
         pred_conf = prediction[3] if len(prediction) == 4 else None
         if rev_tensor is not None:
             pred_bbox = (pred_bbox - rev_tensor[:, None, 1:]) / rev_tensor[:, 0:1, None]

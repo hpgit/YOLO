@@ -27,6 +27,8 @@ class YOLO(nn.Module):
         self.layer_map = get_layer_map()  # Get the map Dict[str: Module]
         self.model: List[YOLOLayer] = nn.ModuleList()
         self.reg_max = getattr(model_cfg.anchor, "reg_max", 16)
+        pose_config = getattr(model_cfg, "pose", None)
+        self.pose_config = dict(pose_config) if pose_config is not None else None
         self.build_model(model_cfg.model)
 
     def build_model(self, model_arch: Dict[str, List[Dict[str, Dict[str, Dict]]]]):
@@ -46,13 +48,18 @@ class YOLO(nn.Module):
                 # Find in channels
                 if any(module in layer_type for module in ["Conv", "ELAN", "ADown", "AConv", "CBLinear"]):
                     layer_args["in_channels"] = output_dim[source]
-                if any(module in layer_type for module in ["Detection", "Segmentation", "Classification"]):
+                if any(module in layer_type for module in ["Detection", "Segmentation", "Classification", "Pose"]):
                     if isinstance(source, list):
                         layer_args["in_channels"] = [output_dim[idx] for idx in source]
                     else:
                         layer_args["in_channel"] = output_dim[source]
                     layer_args["num_classes"] = self.num_classes
                     layer_args["reg_max"] = self.reg_max
+                if layer_type == "MultiheadPose":
+                    if self.pose_config is None:
+                        raise ValueError("MultiheadPose requires model.pose configuration")
+                    for key in ("num_keypoints", "pose_bins", "pose_range"):
+                        layer_args[key] = self.pose_config[key]
 
                 # create layers
                 layer = self.create_layer(layer_type, source, layer_info, **layer_args)
@@ -133,6 +140,11 @@ class YOLO(nn.Module):
         """
         if isinstance(weights, Path):
             weights = torch.load(weights, map_location=torch.device("cpu"), weights_only=False)
+        self.loaded_pose_config = weights.get("pose_config")
+        if self.loaded_pose_config is not None and self.loaded_pose_config != self.pose_config:
+            raise ValueError("Checkpoint pose_config does not match the configured keypoint bins/range/layout.")
+        if "weights" in weights:
+            weights = weights["weights"]
         if "state_dict" in weights:
             weights = {name.removeprefix("model.model."): key for name, key in weights["state_dict"].items()}
         model_state_dict = self.model.state_dict()
@@ -141,12 +153,15 @@ class YOLO(nn.Module):
         # TODO2: weight transform if num_class difference
 
         error_dict = {"Mismatch": set(), "Not Found": set()}
+        self.weight_load_report = {"missing": [], "mismatch": []}
         for model_key, model_weight in model_state_dict.items():
             if model_key not in weights:
                 error_dict["Not Found"].add(tuple(model_key.split(".")[:-2]))
+                self.weight_load_report["missing"].append(model_key)
                 continue
             if model_weight.shape != weights[model_key].shape:
                 error_dict["Mismatch"].add(tuple(model_key.split(".")[:-2]))
+                self.weight_load_report["mismatch"].append(model_key)
                 continue
             model_state_dict[model_key] = weights[model_key]
 
@@ -163,6 +178,21 @@ class YOLO(nn.Module):
 
         self.model.load_state_dict(model_state_dict)
 
+    def require_pose_weights(self):
+        """Reject incomplete/misconfigured pose inference checkpoints."""
+        if self.pose_config is None:
+            return
+        if getattr(self, "loaded_pose_config", None) != self.pose_config:
+            raise ValueError(
+                "Pose inference needs a pose checkpoint with matching pose_config metadata. "
+                "Detection weights may initialize task=train, but cannot infer trained keypoints."
+            )
+        report = self.weight_load_report
+        main_index = self.layer_index["Main"] - 1
+        missing = [key for key in report["missing"] + report["mismatch"] if int(key.split(".", 1)[0]) <= main_index]
+        if missing:
+            raise ValueError(f"Pose inference checkpoint is incomplete: {len(missing)} missing/mismatched tensors.")
+
 
 def create_model(model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, class_num: int = 80) -> YOLO:
     """Constructs and returns a model from a Dictionary configuration file.
@@ -173,6 +203,10 @@ def create_model(model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, 
     Returns:
         YOLO: An instance of the model defined by the given configuration.
     """
+    if getattr(model_cfg, "pose", None) is not None and weight_path is True:
+        raise ValueError(
+            "Pose models require an explicit checkpoint path or weight=false; pretrained pose weights are not bundled."
+        )
     OmegaConf.set_struct(model_cfg, False)
     model = YOLO(model_cfg, class_num)
     if weight_path:

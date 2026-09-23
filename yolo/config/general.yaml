@@ -1,4 +1,5 @@
 accelerator: auto
+precision: 16-mixed
 device: auto
 cpu_num: 16
 

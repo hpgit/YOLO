@@ -1,4 +1,4 @@
-"""Export detection models with one pre-NMS output and rank <= 4 tensors."""
+"""Export detection and pose models with one pre-NMS output and rank <= 4 tensors."""
 
 from copy import deepcopy
 from pathlib import Path
@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from yolo.config.config import Config
-from yolo.model.module import Anchor2Vec, MultiheadDetection
+from yolo.model.module import Anchor2Vec, MultiheadDetection, MultiheadPose
 from yolo.model.yolo import create_model
 from yolo.utils.bounding_box_utils import Anc2Box, create_converter
 from yolo.utils.logger import logger
@@ -55,6 +55,10 @@ class ExportModel(nn.Module):
     return decoded [B, N, 4 + classes], pixel xyxy followed by class scores.
     Anchor-based YOLOv7 heads always use the decoded contract.
 
+    Pose models append ``2*K*M`` coordinate softmax values and ``K`` visibility
+    sigmoid scores to the probability contract, or ``K*3`` flattened pixel
+    ``(x, y, confidence)`` triples to the decoded contract.
+
     Only Main detections are exported. No confidence filtering, top-k, NMS,
     clipping or inverse letterbox transform is performed.
     """
@@ -63,8 +67,16 @@ class ExportModel(nn.Module):
         super().__init__()
         self.model = deepcopy(model).cpu().float().eval()
         main = next((layer for layer in self.model.model if layer.tags == "Main" and layer.output), None)
-        if type(main) is not MultiheadDetection:
-            raise ValueError("Export requires a detection model with a Main MultiheadDetection output.")
+        if type(main) not in (MultiheadDetection, MultiheadPose):
+            raise ValueError(
+                "Export requires a detection or pose model with a Main MultiheadDetection/MultiheadPose output."
+            )
+        self.pose_config = getattr(self.model, "pose_config", None)
+        if self.pose_config is not None:
+            self.num_keypoints = self.pose_config["num_keypoints"]
+            self.pose_bins = self.pose_config["pose_bins"]
+            pose_range = self.pose_config["pose_range"]
+            self.register_buffer("pose_bin_centers", torch.linspace(-pose_range, pose_range, self.pose_bins))
         self.probabilities = probabilities and all(
             isinstance(getattr(head, "anc2vec", None), Anchor2Vec) for head in main.heads
         )
@@ -92,10 +104,17 @@ class ExportModel(nn.Module):
     def forward(self, images):
         predictions = self.model(images, shortcut="Main")["Main"]
         if self.probabilities:
-            return torch.cat(
-                [torch.cat((head[2], head[0].flatten(2).transpose(1, 2).sigmoid()), dim=-1) for head in predictions],
-                dim=1,
-            )
+            outputs = []
+            for head in predictions:
+                parts = [head[2], head[0].flatten(2).transpose(1, 2).sigmoid()]
+                if self.pose_config is not None:
+                    logits = head[3].flatten(2).transpose(1, 2)
+                    probabilities = logits.reshape(images.shape[0], -1, self.num_keypoints * 2, self.pose_bins).softmax(
+                        -1
+                    )
+                    parts.extend((probabilities.flatten(2), head[4].flatten(2).transpose(1, 2).sigmoid()))
+                outputs.append(torch.cat(parts, dim=-1))
+            return torch.cat(outputs, dim=1)
         if self.anchor_based:
             outputs = []
             for index, prediction in enumerate(predictions):
@@ -114,6 +133,15 @@ class ExportModel(nn.Module):
         distances = torch.cat([head[2].flatten(2).transpose(1, 2) for head in predictions], dim=1) * self.scaler
         left_top, right_bottom = distances.chunk(2, dim=-1)
         boxes = torch.cat((self.anchor_grid - left_top, self.anchor_grid + right_bottom), dim=-1)
+        if self.pose_config is not None:
+            logits = torch.cat([head[3].flatten(2).transpose(1, 2) for head in predictions], dim=1)
+            probabilities = logits.reshape(images.shape[0], -1, self.num_keypoints * 2, self.pose_bins).softmax(-1)
+            offsets = (probabilities * self.pose_bin_centers).sum(-1)
+            offsets = offsets.reshape(images.shape[0], -1, self.num_keypoints, 2)
+            coordinates = self.anchor_grid.reshape(1, -1, 1, 2) + offsets * self.scaler.unsqueeze(-1)
+            visibility = torch.cat([head[4].flatten(2).transpose(1, 2) for head in predictions], dim=1).sigmoid()
+            keypoints = torch.cat((coordinates, visibility.unsqueeze(-1)), dim=-1).flatten(2)
+            return torch.cat((boxes, scores, keypoints), dim=-1)
         return torch.cat((boxes, scores), dim=-1)
 
 
@@ -193,6 +221,8 @@ def export_model(cfg: Config) -> Path:
     if output.exists() and not cfg.exist_ok:
         raise FileExistsError(output)
     model = create_model(deepcopy(cfg.model), class_num=cfg.dataset.class_num, weight_path=cfg.weight)
+    if getattr(model, "pose_config", None) is not None and cfg.weight:
+        model.require_pose_weights()
     wrapper = ExportModel(
         model, cfg.model.anchor, list(cfg.image_size), cfg.model.name, probabilities=task.format == "onnx"
     ).eval()
@@ -220,5 +250,9 @@ def export_model(cfg: Config) -> Path:
         edge_model = litert_torch.convert(wrapper, (sample,))
         edge_model.export(str(output))
     contract = "L/T/R/B softmax + class sigmoid" if wrapper.probabilities else "xyxy + class scores"
+    if wrapper.pose_config is not None:
+        contract += (
+            " + keypoint xy softmax + visibility sigmoid" if wrapper.probabilities else " + keypoint (x,y,confidence)"
+        )
     logger.info(f"Exported {output}: input {tuple(sample.shape)}, output {output_shape} ({contract}, no NMS)")
     return output

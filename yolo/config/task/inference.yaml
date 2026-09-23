@@ -10,3 +10,6 @@ nms:
   min_iou: 0.5
   max_bbox: 300
 save_predict: True
+# Pose rows are also available as per-frame JSON in the same run directory.
+save_json: True
+keypoint_confidence: 0.5

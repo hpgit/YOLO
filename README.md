@@ -54,6 +54,15 @@ These are simple examples. For more customization details, please refer to [Note
 
 ## Training
 
+### Grid-relative pose baseline
+
+YOLOv9 T/S/M/C pose variants add independent signed-DFL keypoint heads, COCO
+keypoint training/OKS evaluation, skeleton inference and pose export. See the
+[pose implementation and commands (한국어)](docs/pose/IMPLEMENTATION_KO.md).
+Run a one-epoch 1/20 COCO execution smoke test with
+`python scripts/smoke_pose.py --output runs/pose-smoke`.
+Pose heads require training; detector weights alone do not produce trained keypoints.
+
 For a reproducible COCO 1/20 subset and training/validation speed comparisons, see the [subset performance guide (한국어)](docs/performance-coco-subset.md).
 
 Named runs automatically resume their latest checkpoint when `weight` is omitted or `weight=False`.

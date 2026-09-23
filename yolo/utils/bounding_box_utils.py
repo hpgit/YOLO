@@ -40,9 +40,7 @@ def _strides_from_feature_maps(feature_maps, image_size):
     for feature_map in feature_maps:
         feature_h, feature_w = feature_map.shape[-2:]
         if H % feature_h or W % feature_w:
-            raise ValueError(
-                f"Image size {(W, H)} is not divisible by feature map size {(feature_w, feature_h)}"
-            )
+            raise ValueError(f"Image size {(W, H)} is not divisible by feature map size {(feature_w, feature_h)}")
         stride_h, stride_w = H // feature_h, W // feature_w
         if stride_h != stride_w:
             raise ValueError(
@@ -307,7 +305,7 @@ class BoxMatcher:
         unique_indices = topk_mask.to(torch.uint8).argmax(dim=1)
         return unique_indices[..., None], topk_mask.any(dim=1), topk_mask
 
-    def __call__(self, target: Tensor, predict: Tuple[Tensor]) -> Tuple[Tensor, Tensor]:
+    def __call__(self, target: Tensor, predict: Tuple[Tensor], return_indices: bool = False):
         """Matches each target to the most suitable anchor.
         1. For each anchor prediction, find the highest suitability targets.
         2. Match target to the best anchor.
@@ -326,6 +324,8 @@ class BoxMatcher:
                 The class probabilities are normalized.
             valid_mask: Bool tensor of shape [batch x anchors].
                 True if a anchor has a target/gt assigned to it.
+            matched_indices: Returned only when return_indices=True; original target
+                row indices [batch x anchors], with -1 for unmatched anchors.
         """
         predict_cls, predict_bbox = predict
 
@@ -337,6 +337,9 @@ class BoxMatcher:
             align_bbox = torch.zeros_like(predict_bbox, device=device)
             valid_mask = torch.zeros(predict_cls.shape[:2], dtype=bool, device=device)
             anchor_matched_targets = torch.cat([align_cls, align_bbox], dim=-1)
+            if return_indices:
+                indices = torch.full(valid_mask.shape, -1, dtype=torch.long, device=device)
+                return anchor_matched_targets, valid_mask, indices
             return anchor_matched_targets, valid_mask
 
         target_cls, target_bbox = target.split([1, 4], dim=-1)  # B x N x (C B) -> B x N x C, B x N x B
@@ -376,6 +379,9 @@ class BoxMatcher:
         normalize_term = normalize_term.permute(0, 2, 1).gather(2, unique_indices)
         align_cls = align_cls * normalize_term * valid_mask[:, :, None]
         anchor_matched_targets = torch.cat([align_cls, align_bbox], dim=-1)
+        if return_indices:
+            indices = unique_indices.squeeze(-1).masked_fill(~valid_mask, -1)
+            return anchor_matched_targets, valid_mask, indices
         return anchor_matched_targets, valid_mask
 
 
@@ -482,6 +488,11 @@ class Anc2Box:
 
 
 def create_converter(model_version: str = "v9-c", *args, **kwargs) -> Union[Anc2Box, Vec2Box]:
+    model = args[0] if args else kwargs.get("model")
+    if getattr(model, "pose_config", None) is not None:
+        from yolo.utils.pose_utils import Pose2Box
+
+        return Pose2Box(*args, **kwargs)
     if "v7" in model_version:  # check model if v7
         converter = Anc2Box(*args, **kwargs)
     else:

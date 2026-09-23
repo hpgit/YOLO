@@ -21,7 +21,6 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from torch import Tensor
 
-
 METRIC_NAMES = (
     "map",
     "map_50",
@@ -68,6 +67,8 @@ class CocoJsonEvaluator:
     :func:`yolo.tools.data_conversion.discretize_categories`.
     """
 
+    metric_names = METRIC_NAMES
+
     def __init__(
         self,
         annotation_path: Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]],
@@ -97,13 +98,13 @@ class CocoJsonEvaluator:
                     if old_id in image_ids:
                         raise ValueError(f"COCO annotation contains duplicate image ID {old_id!r}: {path}")
                     image_ids[old_id] = len(merged["images"]) + 1
-                    merged["images"].append(dict(
-                        image, id=image_ids[old_id], file_name=str((Path(root) / image["file_name"]).resolve())
-                    ))
+                    merged["images"].append(
+                        dict(image, id=image_ids[old_id], file_name=str((Path(root) / image["file_name"]).resolve()))
+                    )
                 for annotation in data.get("annotations", []):
-                    merged["annotations"].append(dict(
-                        annotation, id=len(merged["annotations"]) + 1, image_id=image_ids[annotation["image_id"]]
-                    ))
+                    merged["annotations"].append(
+                        dict(annotation, id=len(merged["annotations"]) + 1, image_id=image_ids[annotation["image_id"]])
+                    )
             with contextlib.redirect_stdout(io.StringIO()):
                 self._coco_gt = COCO()
                 self._coco_gt.dataset = merged
@@ -125,9 +126,11 @@ class CocoJsonEvaluator:
             if "area" not in annotation:
                 bbox = annotation.get("bbox")
                 if (
-                    not isinstance(bbox, (list, tuple)) or len(bbox) != 4
+                    not isinstance(bbox, (list, tuple))
+                    or len(bbox) != 4
                     or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in bbox)
-                    or bbox[2] <= 0 or bbox[3] <= 0
+                    or bbox[2] <= 0
+                    or bbox[3] <= 0
                 ):
                     raise ValueError(f"Cannot derive area from bbox for COCO annotation {annotation.get('id')}")
                 annotation["area"] = bbox[2] * bbox[3]
@@ -363,7 +366,7 @@ class CocoJsonEvaluator:
         records = self._gather_records()
         if not distributed:
             metrics = self._evaluate(records)
-            result = {name: torch.tensor(metrics[name], dtype=torch.float64) for name in METRIC_NAMES}
+            result = {name: torch.tensor(metrics[name], dtype=torch.float64) for name in self.metric_names}
             result["classes"] = torch.arange(len(self._category_ids), dtype=torch.int64)
             return result
 
@@ -382,6 +385,6 @@ class CocoJsonEvaluator:
         if not packet["ok"]:
             raise RuntimeError("COCO evaluation failed ({}): {}".format(packet["error_type"], packet["error"]))
 
-        result = {name: torch.tensor(packet["metrics"][name], dtype=torch.float64) for name in METRIC_NAMES}
+        result = {name: torch.tensor(packet["metrics"][name], dtype=torch.float64) for name in self.metric_names}
         result["classes"] = torch.arange(len(self._category_ids), dtype=torch.int64)
         return result

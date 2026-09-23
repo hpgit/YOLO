@@ -75,7 +75,10 @@ class YoloDataset(Dataset):
             # replaced pseudo-labels cannot be hidden by an old .pache cache.
             data = []
             for image_path, boxes in load_parquet_annotations(
-                parquet_path, dataset_path, self.class_num, split=parquet_split_name(phase_name),
+                parquet_path,
+                dataset_path,
+                self.class_num,
+                split=parquet_split_name(phase_name),
             ):
                 boxes[:, 1:] = np.clip(boxes[:, 1:], 0.0, 1.0)
                 if self.dynamic_shape:
@@ -259,6 +262,11 @@ def collate_fn(batch: List[Tuple[Tensor, Tensor]], max_boxes=100) -> Tuple[Tenso
 def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: str = "train"):
     if task == "inference":
         return StreamDataLoader(data_cfg)
+
+    if getattr(dataset_cfg, "pose", False):
+        from yolo.tools.pose_dataset import create_pose_dataloader
+
+        return create_pose_dataloader(data_cfg, dataset_cfg, task)
 
     shuffle = data_cfg.shuffle
     if shuffle and getattr(data_cfg, "dynamic_shape", False):

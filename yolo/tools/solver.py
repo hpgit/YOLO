@@ -1,3 +1,4 @@
+import json
 from math import isfinite
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from torchmetrics.detection import MeanAveragePrecision
 from yolo.config.config import Config
 from yolo.model.yolo import create_model
 from yolo.tools.data_loader import create_dataloader
-from yolo.tools.drawer import draw_bboxes
+from yolo.tools.drawer import draw_bboxes, draw_poses
 from yolo.tools.loss_functions import create_loss_function
 from yolo.utils.bounding_box_utils import create_converter, to_metrics_format
 from yolo.utils.coco_eval import CocoJsonEvaluator
@@ -19,6 +20,18 @@ from yolo.utils.parquet_utils import parquet_split_name, resolve_parquet_annotat
 
 def create_validation_metric(validation_cfg, dataset_cfg):
     """Prefer authoritative JSON; use tensor metrics for TXT/Parquet targets."""
+    if getattr(dataset_cfg, "pose", False):
+        from yolo.utils.pose_eval import CocoPoseEvaluator
+
+        split = dataset_cfg.validation
+        if not isinstance(split, str):
+            raise ValueError("Pose validation currently requires one COCO split.")
+        root = Path(dataset_cfg.path)
+        configured = getattr(validation_cfg, "annotation_path", None)
+        annotation = Path(configured) if configured else Path("annotations") / f"person_keypoints_{split}.json"
+        return CocoPoseEvaluator(
+            annotation if annotation.is_absolute() else root / annotation, image_root=root / "images" / split
+        )
     backend = getattr(validation_cfg, "evaluator", "auto")
     if backend not in {"auto", "coco", "torchmetrics"}:
         raise ValueError(f"Unknown validation evaluator: {backend!r}")
@@ -27,16 +40,21 @@ def create_validation_metric(validation_cfg, dataset_cfg):
     configured_path = getattr(validation_cfg, "annotation_path", None)
     has_parquet = any(resolve_parquet_annotation(dataset_root, phase) is not None for phase in phases)
     if has_parquet and backend == "coco" and not configured_path:
-        raise ValueError("Parquet validation requires evaluator=auto or torchmetrics, or an explicit COCO annotation_path")
-    annotation_paths = [Path(configured_path)] if configured_path else [
-        Path("annotations") / f"instances_{phase}.json" for phase in phases
-    ]
+        raise ValueError(
+            "Parquet validation requires evaluator=auto or torchmetrics, or an explicit COCO annotation_path"
+        )
+    annotation_paths = (
+        [Path(configured_path)]
+        if configured_path
+        else [Path("annotations") / f"instances_{phase}.json" for phase in phases]
+    )
     annotation_paths = [path if path.is_absolute() else dataset_root / path for path in annotation_paths]
     # The loader gives an explicit split TXT list precedence over JSON labels.
     # Match that in auto mode; an explicit JSON request makes JSON authoritative.
     split_txt = any((dataset_root / f"{phase}.txt").is_file() for phase in phases)
     use_json = backend == "coco" or (
-        backend == "auto" and (
+        backend == "auto"
+        and (
             configured_path or (not has_parquet and all(path.is_file() for path in annotation_paths) and not split_txt)
         )
     )
@@ -49,7 +67,9 @@ def create_validation_metric(validation_cfg, dataset_cfg):
                 image_root /= parquet_split_name(phases[0]) if has_parquet else phases[0]
             metric = CocoJsonEvaluator(annotation_paths[0], image_root=image_root)
         else:
-            metric = CocoJsonEvaluator(annotation_paths, image_root=[dataset_root / "images" / phase for phase in phases])
+            metric = CocoJsonEvaluator(
+                annotation_paths, image_root=[dataset_root / "images" / phase for phase in phases]
+            )
         if len(metric.coco_gt.getCatIds()) != dataset_cfg.class_num:
             raise ValueError("Annotation category count must match dataset.class_num for COCO evaluation.")
         logger.info(f"COCO JSON evaluation: {annotation_paths}")
@@ -64,6 +84,19 @@ class BaseModel(LightningModule):
     def __init__(self, cfg: Config):
         super().__init__()
         self.model = create_model(cfg.model, class_num=cfg.dataset.class_num, weight_path=cfg.weight)
+        if getattr(self.model, "pose_config", None) is not None:
+            if cfg.dataset.class_num != 1:
+                raise ValueError("Pose baseline requires a single person class; use dataset=coco-pose.")
+            if cfg.task.task != "inference" and not getattr(cfg.dataset, "pose", False):
+                raise ValueError("Pose training/validation requires a keypoint dataset (dataset=coco-pose).")
+            if cfg.task.task != "inference" and self.model.pose_config["num_keypoints"] != cfg.dataset.num_keypoints:
+                raise ValueError("Model and dataset keypoint counts must agree.")
+            if cfg.task.task == "inference" and not cfg.weight:
+                logger.warning("Pose head is randomly initialized: outputs are for smoke testing only.")
+            if cfg.task.task in ("inference", "validation") and cfg.weight:
+                self.model.require_pose_weights()
+        elif getattr(cfg.dataset, "pose", False):
+            raise ValueError("Keypoint datasets require a pose model, e.g. model=v9-t-pose.")
 
     def forward(self, x):
         return self.model(x)
@@ -116,8 +149,12 @@ class ValidateModel(BaseModel):
         sync_dist = not isinstance(self.metric, CocoJsonEvaluator)
         epoch_metrics = {key: value.to(self.device) for key, value in epoch_metrics.items()}
         self.log_dict(epoch_metrics, prog_bar=True, sync_dist=sync_dist)
+        is_pose = getattr(getattr(self, "model", None), "pose_config", None) is not None
         self.log_dict(
-            {"PyCOCO/AP @ .5:.95": epoch_metrics["map"], "PyCOCO/AP @ .5": epoch_metrics["map_50"]},
+            {
+                ("PyCOCO/PoseAP @ .5:.95" if is_pose else "PyCOCO/AP @ .5:.95"): epoch_metrics["map"],
+                ("PyCOCO/PoseAP @ .5" if is_pose else "PyCOCO/AP @ .5"): epoch_metrics["map_50"],
+            },
             sync_dist=sync_dist,
         )
         self.metric.reset()
@@ -164,8 +201,7 @@ class TrainModel(ValidateModel):
         nominal_batch = getattr(data, "equivalent_batch_size", global_batch)
         ratio = nominal_batch / global_batch
         warmup = self.cfg.task.scheduler.warmup
-        warmup_batches = max(round(warmup.epochs * self._batches_per_epoch),
-                             getattr(warmup, "min_iterations", 100))
+        warmup_batches = max(round(warmup.epochs * self._batches_per_epoch), getattr(warmup, "min_iterations", 100))
         if warmup_batches and iteration <= warmup_batches:
             return max(1, round(1 + (ratio - 1) * iteration / warmup_batches))
         return max(1, round(ratio))
@@ -184,10 +220,14 @@ class TrainModel(ValidateModel):
             scheduler.step()
 
     def on_save_checkpoint(self, checkpoint):
+        if getattr(self.model, "pose_config", None) is not None:
+            checkpoint["pose_config"] = dict(self.model.pose_config)
         checkpoint["training_accumulation"] = {"last_opt_step": self._last_opt_step}
         checkpoint["training_optimizer"] = {"max_lr": getattr(self.trainer.optimizers[0], "max_lr", None)}
 
     def on_load_checkpoint(self, checkpoint):
+        if checkpoint.get("pose_config") != getattr(self.model, "pose_config", None):
+            raise ValueError("Resume checkpoint pose_config does not match this model.")
         self._last_opt_step = checkpoint.get("training_accumulation", {}).get("last_opt_step", -1)
         self._restored_optimizer_max_lr = checkpoint.get("training_optimizer", {}).get("max_lr")
 
@@ -241,8 +281,46 @@ class InferenceModel(BaseModel):
 
     def predict_step(self, batch, batch_idx):
         images, rev_tensor, origin_frame = batch
-        predicts = self.post_process(self(images), rev_tensor=rev_tensor)
-        img = draw_bboxes(origin_frame, predicts, idx2label=self.cfg.dataset.class_list)
+        is_pose = self.model.pose_config is not None
+        if is_pose:
+            # Integer resize produces slightly different x/y gains on odd sizes.
+            width, height = origin_frame.size
+            target_h, target_w = images.shape[-2:]
+            gain = min(target_w / width, target_h / height)
+            resized_w, resized_h = int(width * gain), int(height * gain)
+            rev_tensor = images.new_tensor(
+                [[resized_w / width, resized_h / height, (target_w - resized_w) // 2, (target_h - resized_h) // 2]]
+            )
+        predicts = self.post_process(
+            self.model(images, shortcut="Main"), rev_tensor=rev_tensor, image_size=[images.shape[-1], images.shape[-2]]
+        )
+        self.last_predictions = predicts
+        if is_pose:
+            img = draw_poses(
+                origin_frame,
+                predicts,
+                idx2label=self.cfg.dataset.class_list,
+                confidence=getattr(self.cfg.task, "keypoint_confidence", 0.5),
+                skeleton=getattr(self.cfg.dataset, "skeleton", None),
+            )
+            if getattr(self.cfg.task, "save_json", True) and self.trainer.is_global_zero:
+                destination = Path(self.trainer.default_root_dir) / f"frame{batch_idx:08d}.json"
+                rows = predicts[0].detach().cpu()
+                instances = [
+                    {
+                        "class_id": int(row[0]),
+                        "bbox_xyxy": row[1:5].tolist(),
+                        "score": float(row[5]),
+                        "keypoints": row[6:].reshape(-1, 3).tolist(),
+                    }
+                    for row in rows
+                ]
+                destination.write_text(
+                    json.dumps({"image_size": [width, height], "instances": instances}, allow_nan=False),
+                    encoding="utf-8",
+                )
+        else:
+            img = draw_bboxes(origin_frame, predicts, idx2label=self.cfg.dataset.class_list)
         if getattr(self.predict_loader, "is_stream", None):
             fps = self._display_stream(img)
         else:

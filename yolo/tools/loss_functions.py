@@ -135,6 +135,11 @@ class DualLoss:
 
 def create_loss_function(cfg: Config, vec2box) -> DualLoss:
     # TODO: make it flexible, if cfg doesn't contain aux, only use SingleLoss
-    loss_function = DualLoss(cfg, vec2box)
+    if getattr(vec2box, "pose_config", None) is not None:
+        from yolo.tools.pose_loss import DualPoseLoss
+
+        loss_function = DualPoseLoss(cfg, vec2box)
+    else:
+        loss_function = DualLoss(cfg, vec2box)
     logger.info(":white_check_mark: Success load loss function")
     return loss_function

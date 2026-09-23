@@ -39,8 +39,10 @@ from typing_extensions import override
 from yolo.config.config import Config, YOLOLayer
 from yolo.model.yolo import YOLO
 from yolo.utils.checkpoint_utils import YOLOCheckpoint
+from yolo.utils.coco_eval import METRIC_NAMES
 from yolo.utils.logger import logger
 from yolo.utils.model_utils import EMA, GradientAccumulation
+from yolo.utils.pose_eval import POSE_METRIC_NAMES
 from yolo.utils.solver_utils import make_ap_table
 
 
@@ -64,10 +66,30 @@ class YOLOQuietEpochSummary(Callback):
     """Print epoch summaries and optionally append them to the experiment's result log."""
 
     metric_labels = {
-        "map": "AP", "map_50": "AP50", "map_75": "AP75",
-        "map_small": "AP_small", "map_medium": "AP_medium", "map_large": "AP_large",
-        "mar_1": "AR1", "mar_10": "AR10", "mar_100": "AR100",
-        "mar_small": "AR_small", "mar_medium": "AR_medium", "mar_large": "AR_large",
+        "map": "AP",
+        "map_50": "AP50",
+        "map_75": "AP75",
+        "map_small": "AP_small",
+        "map_medium": "AP_medium",
+        "map_large": "AP_large",
+        "mar_1": "AR1",
+        "mar_10": "AR10",
+        "mar_100": "AR100",
+        "mar_small": "AR_small",
+        "mar_medium": "AR_medium",
+        "mar_large": "AR_large",
+    }
+    pose_metric_labels = {
+        "map": "PoseAP",
+        "map_50": "PoseAP50",
+        "map_75": "PoseAP75",
+        "map_medium": "PoseAP_medium",
+        "map_large": "PoseAP_large",
+        "mar_20": "PoseAR20",
+        "mar_20_50": "PoseAR20_50",
+        "mar_20_75": "PoseAR20_75",
+        "mar_20_medium": "PoseAR20_medium",
+        "mar_20_large": "PoseAR20_large",
     }
 
     def __init__(self, result_path: Optional[Path] = None):
@@ -134,7 +156,8 @@ class YOLOQuietEpochSummary(Callback):
         for name, value in metrics.items():
             if "Loss" in name and name.endswith("_epoch"):
                 fields.append(f"{name.removesuffix('_epoch')}={float(value):.4f}")
-        for name, label in self.metric_labels.items():
+        labels = self.pose_metric_labels if "mar_20" in metrics else self.metric_labels
+        for name, label in labels.items():
             if name in metrics:
                 value = float(metrics[name])
                 score = f"{value * 100:.2f}%" if value >= 0 else "N/A"
@@ -149,6 +172,46 @@ class YOLOQuietEpochSummary(Callback):
     def _format_timing(stage, seconds, batches):
         speed = f"{batches / seconds:.2f}" if seconds > 0 else "N/A"
         return f"{stage}={seconds:.2f}s ({speed} it/s)"
+
+
+def _make_pose_ap_table(scores, past_results, maxima, epoch):
+    """Render named COCO OKS metrics without detection's 12-stat layout."""
+    table = Table(title="COCO Pose (OKS, maxDets=20)")
+    for label in ("Epoch", "Pose Average Precision", "%", "Pose Average Recall", "%"):
+        table.add_column(label)
+
+    def value_text(value, color):
+        return "N/A" if value < 0 else f"{color}{value:.2f}"
+
+    for past_epoch, (ap_name, ap_color, ap_value, ar_name, ar_color, ar_value) in past_results:
+        table.add_row(str(past_epoch), ap_name, value_text(ap_value, ap_color), ar_name, value_text(ar_value, ar_color))
+    if past_results:
+        table.add_row()
+    colors = {name: "[green]" if scores[name] >= maxima[name] else "[red]" for name in scores}
+    pairs = (
+        ("map", "Pose AP @ .50:.95", "mar_20", "Pose AR20 @ .50:.95"),
+        ("map_50", "Pose AP @ .50", "mar_20_50", "Pose AR20 @ .50"),
+        ("map_75", "Pose AP @ .75", "mar_20_75", "Pose AR20 @ .75"),
+        ("map_medium", "Pose AP (medium)", "mar_20_medium", "Pose AR20 (medium)"),
+        ("map_large", "Pose AP (large)", "mar_20_large", "Pose AR20 (large)"),
+    )
+    for ap_key, ap_label, ar_key, ar_label in pairs:
+        table.add_row(
+            str(epoch),
+            ap_label,
+            value_text(scores[ap_key], colors[ap_key]),
+            ar_label,
+            value_text(scores[ar_key], colors[ar_key]),
+        )
+    current = (
+        "Pose AP @ .50:.95",
+        colors["map"],
+        scores["map"],
+        "Pose AR20 @ .50:.95",
+        colors["mar_20"],
+        scores["mar_20"],
+    )
+    return table, current
 
 
 class YOLORichProgressBar(RichProgressBar):
@@ -237,14 +300,24 @@ class YOLORichProgressBar(RichProgressBar):
         self.reset_dataloader_idx_tracker()
         all_metrics = self.get_metrics(trainer, pl_module)
 
-        ap_ar_list = [
-            key
-            for key in all_metrics.keys()
-            if key.startswith(("map", "mar")) and not key.endswith(("_step", "_epoch"))
-        ]
-        score = np.array([all_metrics[key] for key in ap_ar_list]) * 100
-
-        self.progress.table, ap_main = make_ap_table(score, self.past_results, self.max_result, trainer.current_epoch)
+        is_pose = "mar_20" in all_metrics
+        names = POSE_METRIC_NAMES if is_pose else METRIC_NAMES
+        # Lightning dictionaries need not preserve COCOeval statistic order.
+        score = np.array([float(all_metrics.get(name, -1.0)) for name in names]) * 100
+        if np.ndim(self.max_result) and np.shape(self.max_result) != score.shape:
+            self.max_result = 0
+            self.past_results.clear()
+        if is_pose:
+            self.progress.table, ap_main = _make_pose_ap_table(
+                dict(zip(names, score)),
+                self.past_results,
+                dict(zip(names, np.broadcast_to(self.max_result, score.shape))),
+                trainer.current_epoch,
+            )
+        else:
+            self.progress.table, ap_main = make_ap_table(
+                score, self.past_results, self.max_result, trainer.current_epoch
+            )
         self.max_result = np.maximum(score, self.max_result)
         self.past_results.append((trainer.current_epoch, ap_main))
 
@@ -320,8 +393,8 @@ class ImageLogger(Callback):
             return
         batch_size, images, targets, rev_tensor, img_paths = batch
         predicts, _ = outputs
-        gt_boxes = targets[0] if targets.ndim == 3 else targets
-        pred_boxes = predicts[0] if isinstance(predicts, list) else predicts
+        gt_boxes = (targets[0] if targets.ndim == 3 else targets)[..., :5]
+        pred_boxes = (predicts[0] if isinstance(predicts, list) else predicts)[..., :6]
         images = [images[0]]
         step = trainer.current_epoch
         for logger in trainer.loggers:
@@ -433,9 +506,7 @@ def validate_log_directory(cfg: Config, exp_name: str, *, resume=False) -> Path:
             save_path = base_path / exp_name
             index += 1
         if index > 1:
-            logger.warning(
-                f"🔀 Experiment directory exists! Changed [red]{old_exp_name}[/] to [green]{exp_name}[/]"
-            )
+            logger.warning(f"🔀 Experiment directory exists! Changed [red]{old_exp_name}[/] to [green]{exp_name}[/]")
 
     save_path.mkdir(parents=True, exist_ok=True)
     if not getattr(cfg, "quiet", False):
@@ -458,11 +529,13 @@ def log_bbox(
     Returns:
         List[dict]: List of dictionaries containing normalized bounding box information.
     """
+    if bboxes.ndim != 2 or bboxes.shape[1] not in (5, 6):
+        raise ValueError("log_bbox expects [N, 5] targets or [N, 6] predictions")
     bbox_list = []
     scale_tensor = torch.Tensor([1, *image_size, *image_size]).to(bboxes.device)
     normalized_bboxes = bboxes[:, :5] / scale_tensor
-    for bbox in normalized_bboxes:
-        class_id, x_min, y_min, x_max, y_max, *conf = [float(val) for val in bbox]
+    for index, bbox in enumerate(normalized_bboxes):
+        class_id, x_min, y_min, x_max, y_max = [float(val) for val in bbox]
         if class_id == -1:
             break
         bbox_entry = {
@@ -471,8 +544,8 @@ def log_bbox(
         }
         if class_list:
             bbox_entry["box_caption"] = class_list[int(class_id)]
-        if conf:
-            bbox_entry["scores"] = {"confidence": conf[0]}
+        if bboxes.shape[1] == 6:
+            bbox_entry["scores"] = {"confidence": float(bboxes[index, 5])}
         bbox_list.append(bbox_entry)
 
     return {"predictions": {"box_data": bbox_list}}
