@@ -194,6 +194,19 @@ def test_fraction_samples_all_image_ids_deterministically_and_records_manifest(t
     assert len(first.manifest["image_ids_sha256"]) == 64
 
 
+def test_zero_area_coco_annotation_is_skipped_without_dropping_image(tmp_path):
+    valid, *_ = person_annotations()
+    zero_area = {**valid, "id": 4, "bbox": [1, 2, 4, 0], "num_keypoints": 0, "keypoints": [0] * 51}
+    root = write_pose_data(tmp_path, annotations=[valid, zero_area])
+    data_cfg, dataset_cfg = configs(root)
+
+    dataset = CocoPoseDataset(data_cfg, dataset_cfg, "train")
+
+    assert len(dataset) == 2
+    assert dataset.records[0]["targets"].shape == (1, 56)
+    assert dataset.manifest["skipped_zero_area_annotations"] == 1
+
+
 @pytest.mark.parametrize(
     "update, match",
     [

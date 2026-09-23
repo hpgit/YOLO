@@ -20,6 +20,8 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import functional as TF
 
+from yolo.utils.logger import logger
+
 # COCO's left/right pairs, using zero-based indices in the standard 17-point
 # order. Nose (0) is intentionally unchanged.
 COCO_KEYPOINT_FLIP_INDEX = (0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15)
@@ -152,13 +154,21 @@ class CocoPoseDataset(Dataset):
         selected = set(self.image_ids)
 
         targets_by_image = {image_id: [] for image_id in self.image_ids}
+        degenerate_boxes = 0
         for annotation in payload.get("annotations", []):
             image_id = int(annotation.get("image_id", -1))
             if image_id not in selected or int(annotation.get("category_id", -1)) != self.person_category_id:
                 continue
             if self.training and bool(annotation.get("iscrowd", 0)):
                 continue
-            targets_by_image[image_id].append(self._annotation_row(annotation, image_by_id[image_id]))
+            row = self._annotation_row(annotation, image_by_id[image_id])
+            if row is None:
+                degenerate_boxes += 1
+                continue
+            targets_by_image[image_id].append(row)
+
+        if degenerate_boxes:
+            logger.warning(f"Skipped {degenerate_boxes} COCO pose annotations with zero-area boxes in {self.split}")
 
         target_width = 5 + self.num_keypoints * 3
         self.records = []
@@ -182,10 +192,11 @@ class CocoPoseDataset(Dataset):
             "subset_seed": subset_seed,
             "total_images": len(all_image_ids),
             "selected_images": len(self.image_ids),
+            "skipped_zero_area_annotations": degenerate_boxes,
             "image_ids_sha256": digest,
         }
 
-    def _annotation_row(self, annotation: dict, image: dict) -> list[float]:
+    def _annotation_row(self, annotation: dict, image: dict) -> list[float] | None:
         annotation_id = annotation.get("id", "unknown")
         bbox = annotation.get("bbox")
         if not isinstance(bbox, list) or len(bbox) != 4:
@@ -194,8 +205,13 @@ class CocoPoseDataset(Dataset):
             x, y, width, height = (float(value) for value in bbox)
         except (TypeError, ValueError) as error:
             raise ValueError(f"Annotation {annotation_id} bbox must be numeric") from error
-        if not all(math.isfinite(value) for value in (x, y, width, height)) or width <= 0 or height <= 0:
+        if not all(math.isfinite(value) for value in (x, y, width, height)) or width < 0 or height < 0:
             raise ValueError(f"Annotation {annotation_id} has a non-finite or non-positive bbox")
+        # Official COCO keypoint training JSON contains a zero-height person
+        # box. It cannot supervise detection or pose, so retain the image but
+        # omit that annotation.
+        if width == 0 or height == 0:
+            return None
         image_width, image_height = image["width"], image["height"]
         tolerance = 1e-3
         outside_image = (
