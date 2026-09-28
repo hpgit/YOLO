@@ -239,14 +239,14 @@ def _random_perspective(
             image,
             matrix,
             dsize=(output_width, output_height),
-            borderValue=(114, 114, 114),
+            borderValue=(0, 0, 0),
         )
     else:
         image = cv2.warpAffine(
             image,
             matrix[:2],
             dsize=(output_width, output_height),
-            borderValue=(114, 114, 114),
+            borderValue=(0, 0, 0),
         )
 
     count = len(labels)
@@ -405,7 +405,7 @@ class YOLOv9Augmentation:
         samples.extend(self._prepare_sample(sample) for sample in extra_samples)
         random.shuffle(samples)
 
-        canvas = np.full((size * 2, size * 2, 3), 114, dtype=np.uint8)
+        canvas = np.full((size * 2, size * 2, 3), 0, dtype=np.uint8)
         all_labels = []
         all_segments = []
         for position, (image, labels, segments) in enumerate(samples):
@@ -472,7 +472,7 @@ class YOLOv9Augmentation:
         pad_y = (self.image_size - height) / 2
         left, right = int(round(pad_x - 0.1)), int(round(pad_x + 0.1))
         top, bottom = int(round(pad_y - 0.1)), int(round(pad_y + 0.1))
-        image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+        image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(0, 0, 0))
         if len(labels):
             labels[:, [1, 3]] = labels[:, [1, 3]] * width + pad_x
             labels[:, [2, 4]] = labels[:, [2, 4]] * height + pad_y

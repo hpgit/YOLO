@@ -105,7 +105,7 @@ Postprocessing uses class-aware multi-label NMS on already-normalized scores,
 limits results with ``--max-detections`` (default 300), reverses the actual rounded
 letterbox resize, clips to the original image and drops zero-area boxes. A candidate
 can yield detections for multiple classes. Preprocessing uses RGB, Pillow LANCZOS
-resize and padding value 114, consistent with repository inference preprocessing.
+resize and black padding value 0, consistent with repository inference preprocessing.
 
 Runtime providers
 -----------------

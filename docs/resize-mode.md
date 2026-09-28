@@ -1,9 +1,11 @@
 # Resize mode
 
 `resize_mode=letterbox` (default) preserves the original aspect ratio and pads
-with RGB `(114, 114, 114)`. `resize_mode=stretch` directly resizes to
+with RGB `(0, 0, 0)`. `resize_mode=stretch` directly resizes to
 `image_size=[width,height]`, scaling the horizontal and vertical axes independently.
-The default preserves existing preprocessing and checkpoints remain loadable.
+Letterbox padding, mosaic canvases, and affine/perspective borders use black
+RGB `(0, 0, 0)` across training, validation, inference, and ONNX inference.
+Existing checkpoints remain loadable; the padding color changes their inputs.
 
 Use the same mode for training, validation, inference and export:
 

@@ -102,7 +102,7 @@ def test_no_mosaic_identity_geometry_only_adds_expected_letterbox_padding():
 
     output, output_boxes, reverse = augmentation(image, boxes)
 
-    expected_image = np.full((64, 64, 3), 114, dtype=np.uint8)
+    expected_image = np.full((64, 64, 3), 0, dtype=np.uint8)
     expected_image[16:48] = image
     expected_image = torch.from_numpy(expected_image.transpose(2, 0, 1).copy()).float() / 255
     expected_boxes = torch.tensor([[4, 0.25, 0.375, 0.75, 0.625]], dtype=torch.float32)

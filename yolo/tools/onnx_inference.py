@@ -196,7 +196,7 @@ class ONNXDetector:
         if self.resize_mode == "stretch":
             padded = resized
         else:
-            padded = Image.new("RGB", (self.width, self.height), (114, 114, 114))
+            padded = Image.new("RGB", (self.width, self.height), (0, 0, 0))
             padded.paste(resized, (left, top))
         tensor = np.asarray(padded, dtype=np.float32).transpose(2, 0, 1) / 255.0
         # Use actual rounded resize dimensions for exact inverse coordinates.

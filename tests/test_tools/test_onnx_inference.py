@@ -66,7 +66,7 @@ def test_preprocess_rgb_normalization_and_inverse_letterbox(tmp_path):
     image = Image.new("RGB", (80, 80), (255, 0, 0))
     tensor, transform = detector.preprocess(image)
     assert tensor.shape == (3, 32, 64)
-    np.testing.assert_allclose(tensor[:, 0, 0], np.full(3, 114 / 255), atol=1e-7)
+    np.testing.assert_allclose(tensor[:, 0, 0], np.zeros(3), atol=1e-7)
     np.testing.assert_allclose(tensor[:, 10, 20], [1, 0, 0])
     np.testing.assert_allclose(detector.predict(image)[0], [[0, 0, 10, 80, 70, 0.9]], atol=1e-5)
     # Account for rounding of the resized height, rather than an idealized scale.
