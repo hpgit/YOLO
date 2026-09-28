@@ -220,9 +220,7 @@ def test_checkpoint_resume_continues_epoch_display(tmp_path, quiet):
             num_sanity_val_steps=0,
             default_root_dir=tmp_path,
         )
-        trainer.fit(
-            ProgressTestModel(), train_dataloaders=loader, val_dataloaders=loader, ckpt_path=checkpoint
-        )
+        trainer.fit(ProgressTestModel(), train_dataloaders=loader, val_dataloaders=loader, ckpt_path=checkpoint)
         return trainer, progress
 
     first, initial_progress = fit(2)
