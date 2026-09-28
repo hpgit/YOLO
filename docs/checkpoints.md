@@ -23,7 +23,9 @@ yolo task=train name=my-run model=v9-t
 체크포인트가 없으면 기존 가중치 초기화 방식으로 새 학습을 시작합니다.
 
 자동 재개 시 `exist_ok=False`여도 같은 실행 폴더를 사용합니다. 기본 이름 `v9-dev`도 같은 규칙을 적용합니다.
-`task.epoch`는 추가 epoch 수가 아닌 총 목표 epoch 수입니다. 재개에는 기존 모델·데이터 설정을 유지하세요.
+`task.epoch`는 추가 epoch 수가 아닌 총 목표 epoch 수입니다.
+예를 들어 `epoch0003-*.ckpt`는 4번째 epoch까지 완료한 상태이므로 재개하면 화면과 `result.log`에
+`Epoch 5`부터 표시됩니다. 전체 epoch 진행 막대도 완료한 4 epoch를 반영합니다. 재개에는 기존 모델·데이터 설정을 유지하세요.
 
 ## weight 우선순위
 

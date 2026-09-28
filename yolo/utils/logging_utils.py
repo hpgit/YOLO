@@ -189,20 +189,28 @@ class YOLORichProgressBar(RichProgressBar):
     @rank_zero_only
     def on_train_start(self, trainer, pl_module):
         self._init_progress(trainer)
-        num_epochs = trainer.max_epochs - 1
+        num_epochs = trainer.max_epochs
         self.task_epoch = self._add_task(
             total_batches=num_epochs,
             description=f"[cyan]Start Training {num_epochs} epochs",
         )
+        self.progress.update(self.task_epoch, completed=trainer.current_epoch)
         self.max_result = 0
         self.past_results.clear()
+
+    @override
+    @rank_zero_only
+    def on_train_epoch_start(self, trainer, pl_module):
+        super().on_train_epoch_start(trainer, pl_module)
+        if self.is_enabled:
+            self.progress.update(self.task_epoch, completed=trainer.current_epoch)
 
     @override
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch: Any, batch_idx: int):
         self._update(self.train_progress_bar_id, batch_idx + 1)
         self._update_metrics(trainer, pl_module)
-        epoch_descript = "[cyan]Train [white]|"
+        epoch_descript = f"[cyan]Epoch {trainer.current_epoch + 1}/{trainer.max_epochs} [white]|"
         batch_descript = "[green]Batch [white]|"
         metrics = self.get_metrics(trainer, pl_module)
         metrics.pop("v_num", None)
@@ -211,7 +219,11 @@ class YOLORichProgressBar(RichProgressBar):
                 epoch_descript += f"{metrics_name.removesuffix('_step').split('/')[1]: ^9}|"
                 batch_descript += f"   {metrics_val:2.2f}  |"
 
-        self.progress.update(self.task_epoch, advance=1 / self.total_train_batches, description=epoch_descript)
+        self.progress.update(
+            self.task_epoch,
+            completed=trainer.current_epoch + (batch_idx + 1) / self.total_train_batches,
+            description=epoch_descript,
+        )
         self.progress.update(self.train_progress_bar_id, description=batch_descript)
         self.refresh()
 
