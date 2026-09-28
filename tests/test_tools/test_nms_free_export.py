@@ -53,7 +53,10 @@ def test_topk_batch_caps_empty_inputs_and_nonfinite_predictions():
     assert nms_free_topk(boxes[0].numpy(), scores[0].numpy()).shape == (0, 6)
 
 
-def test_postprocess_never_calls_nms_and_restores_coordinates(monkeypatch):
+@pytest.mark.parametrize(
+    "reverse, expected_box", [([2, 4, 8, 4, 8], [0, 0, 10, 10]), ([2, 4, 0, 0, 0, 0], [2, 2, 12, 7])]
+)
+def test_postprocess_never_calls_nms_and_restores_coordinates(monkeypatch, reverse, expected_box):
     monkeypatch.setattr("yolo.utils.model_utils.bbox_nms", lambda *_: pytest.fail("NMS-free called NMS"))
     boxes = torch.tensor([[[4, 8, 24, 28], [4, 8, 24, 28]]], dtype=torch.float32)
     scores = torch.tensor([[[0.9, 0.8], [0.7, 0.1]]])
@@ -67,8 +70,8 @@ def test_postprocess_never_calls_nms_and_restores_coordinates(monkeypatch):
             assert image_size == [32, 32]
 
     postprocess = PostProcess(Converter(), NMSConfig(0.5, 0.0, 300), nms_free=True)
-    actual = postprocess({"Main": "one-to-one"}, torch.tensor([[2, 4, 8, 4, 8]]), image_size=[32, 32])[0]
-    torch.testing.assert_close(actual, torch.tensor([[0, 0, 0, 10, 10, 0.9], [0, 0, 0, 10, 10, 0.7]]))
+    actual = postprocess({"Main": "one-to-one"}, torch.tensor([reverse]), image_size=[32, 32])[0]
+    torch.testing.assert_close(actual, torch.tensor([[0, *expected_box, 0.9], [0, *expected_box, 0.7]]))
 
 
 def constant_export(path, postprocess_metadata=None):
@@ -121,8 +124,9 @@ def test_runtime_rejects_invalid_postprocessing_metadata(tmp_path, metadata, mes
         ONNXDetector(constant_export(tmp_path / "constant.onnx", metadata), threads=1)
 
 
+@pytest.mark.parametrize("resize_mode", ["letterbox", "stretch"])
 @pytest.mark.parametrize("dynamic", [False, True])
-def test_actual_nms_free_export_uses_only_o2o_rank4_and_runtime_topk(tmp_path, monkeypatch, dynamic):
+def test_actual_nms_free_export_uses_only_o2o_rank4_and_runtime_topk(tmp_path, monkeypatch, dynamic, resize_mode):
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
     cfg = get_cfg(
@@ -132,6 +136,7 @@ def test_actual_nms_free_export_uses_only_o2o_rank4_and_runtime_topk(tmp_path, m
             "model.nms_free=true",
             "weight=false",
             "image_size=[64,32]",
+            f"resize_mode={resize_mode}",
             "dataset.class_num=3",
             f"task.dynamic_batch={str(dynamic).lower()}",
             f"task.output={tmp_path / 'nms-free.onnx'}",
@@ -147,27 +152,39 @@ def test_actual_nms_free_export_uses_only_o2o_rank4_and_runtime_topk(tmp_path, m
     path = export_model(cfg)
     graph = onnx.load(path)
     metadata = json.loads(next(prop.value for prop in graph.metadata_props if prop.key == "yolo.inference"))
+    assert metadata["resize_mode"] == resize_mode
     assert metadata["nms_free"] is True and metadata["postprocess"] == "topk"
     assert not any(node.op_type == "NonMaxSuppression" for node in graph.graph.node)
+    # NMS-free O2O heads must retain main's per-direction DFL normalization.
+    softmax_nodes = [node for node in graph.graph.node if node.op_type == "Softmax"]
+    transpose_outputs = {output for node in graph.graph.node if node.op_type == "Transpose" for output in node.output}
+    reshape_inputs = {node.input[0] for node in graph.graph.node if node.op_type == "Reshape"}
+    assert len(softmax_nodes) == 12
+    assert all(node.input[0] in transpose_outputs for node in softmax_nodes)
+    assert all(node.output[0] in reshape_inputs for node in softmax_nodes)
     assert all(len(value.type.tensor_type.shape.dim) <= 4 for value in graph.graph.value_info)
     names = [tensor.name for tensor in graph.graph.initializer]
     assert any("one2one_heads" in name for name in names)
     assert not any(".heads." in name for name in names)
     detector = ONNXDetector(path, confidence=0.5, max_detections=7, nms_free=False, threads=2)
     assert detector.nms_free
+    assert detector.resize_mode == resize_mode
     count = 2 if dynamic else 1
-    images = [Image.new("RGB", (64, 32), (20 * index, 40, 80)) for index in range(count)]
+    source_size = (128, 64) if resize_mode == "letterbox" else (100, 80)
+    images = [Image.new("RGB", source_size, (20 * index, 40, 80)) for index in range(count)]
+    transforms = [detector.preprocess(image)[1] for image in images]
+    reverse = torch.tensor([[sx, sy, left, top, left, top] for sx, sy, left, top, _, _ in transforms])
     tensors = torch.tensor(np.stack([detector.preprocess(image)[0] for image in images]))
     converter = create_converter(cfg.model.name, model, cfg.model.anchor, list(cfg.image_size), "cpu")
     with torch.no_grad():
         expected_raw = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name)(tensors).numpy()
-        expected = PostProcess(converter, NMSConfig(0.5, 0.0, 7), nms_free=True)(model(tensors))
+        expected = PostProcess(converter, NMSConfig(0.5, 0.0, 7), nms_free=True)(model(tensors), rev_tensor=reverse)
     np.testing.assert_allclose(detector(tensors.numpy()), expected_raw, atol=1e-4, rtol=1e-4)
     monkeypatch.setattr("yolo.tools.onnx_inference.class_aware_nms", lambda *_: pytest.fail("NMS-free called NMS"))
     actual = detector.predict(images)
     assert len(actual) == count
     for result, reference in zip(actual, expected):
         assert result.shape == (7, 6)
-        reference[:, [1, 3]] = reference[:, [1, 3]].clamp(0, 64)
-        reference[:, [2, 4]] = reference[:, [2, 4]].clamp(0, 32)
+        reference[:, [1, 3]] = reference[:, [1, 3]].clamp(0, source_size[0])
+        reference[:, [2, 4]] = reference[:, [2, 4]].clamp(0, source_size[1])
         np.testing.assert_allclose(result, reference.numpy(), atol=1e-4, rtol=1e-4)

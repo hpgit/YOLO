@@ -65,6 +65,7 @@ class DataConfig:
     source: Optional[Union[str, int]]
     dynamic_shape: Optional[bool]
     equivalent_batch_size: Optional[int] = 64
+    resize_mode: str = "letterbox"
 
 
 @dataclass
@@ -144,6 +145,7 @@ class TrainConfig:
     scheduler: SchedulerConfig
     ema: EMAConfig
     validation: ValidationConfig
+    close_mosaic: int = 0
     gradient_clip_val: float = 10.0
     gradient_clip_algorithm: str = "norm"
 
@@ -189,6 +191,7 @@ class Config:
     use_tensorboard: bool
 
     weight: Optional[str]
+    resize_mode: str = "letterbox"
 
 
 @dataclass

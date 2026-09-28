@@ -33,6 +33,27 @@ NMS-free `.ckpt`를 재개할 때도 동일한 모델 크기, 클래스 수, `mo
 기존 baseline `.pt`는 새 NMS-free 학습의 초기값으로 사용할 수 있다. 이것만으로
 중복 억제를 학습한 모델이 되는 것은 아니며, 1:1 손실을 통한 재학습이 필요하다.
 
+## main의 전처리와 학습 설정
+
+NMS-free도 공통 `resize_mode=letterbox|stretch` 설정을 사용한다. 기본 letterbox의
+여백은 검은색이며, stretch는 가로와 세로를 각각 입력 크기에 맞춘다. PyTorch 추론,
+COCO 평가, JSON 출력과 portable ONNX 추론에서 같은 정책으로 원본 좌표를 복원한다.
+ONNX export에는 `resize_mode`와 `nms_free`/`postprocess`가 함께 저장되며,
+portable CLI는 저장된 resize 설정을 사용한다. `--resize-mode`로 재정의할 수 있다.
+Hydra 추론은 `resize_mode` 설정을 전달하므로 export 때 지정한 값을 동일하게 사용한다.
+
+```bash
+python -m yolo.lazy task=train model=v9-t-nms-free weight=false \
+  dataset=coco dataset.path=/path/to/coco name=nms-free-stretch \
+  image_size=640 resize_mode=stretch task.close_mosaic=15
+```
+
+`task.close_mosaic=N`은 YOLOv9 학습 recipe에서 마지막 N개 epoch의 mosaic를 끈다.
+체크포인트 재개 시에도 재개 epoch의 첫 batch부터 적용되며, 기본값 0은 계속 켠다.
+학습 epoch 진행 표시와 정수 `image_size` 정규화도 main의 공통 경로를 사용한다.
+ONNX의 O2O DFL 출력은 각 방향의 bin을 permute한 뒤 softmax하며,
+기존 `[B, N, 4*reg_max+C]` 계약과 tensor rank ≤ 4를 유지한다.
+
 ## 구현 구조
 
 [YOLOv10 논문](https://arxiv.org/abs/2405.14458)의 dual assignment 아이디어를 이
@@ -93,6 +114,16 @@ ONNX에는 one-to-one 헤드만 실행되는 그래프와 NMS-free 후처리 메
 출력 메타데이터를 제거하거나 별도 런타임을 사용한다면 이 계약을 직접 적용해야 한다.
 
 ## 검증 범위
+
+2026-09-29 main (`72c299c`) 병합 검증:
+
+- 전체 CPU 회귀: **593 passed, 9 skipped** (PyTorch 2.6.0).
+- CPU/CUDA 학습·재개, resize, ONNX/CLI 집중 검증: **67 passed**.
+- stretch + YOLOv9 mosaic 종료 경계에서 O2M/O2O 가중치 갱신, EMA와 재개 확인.
+- stretch COCO 평가, 고정/동적 batch ONNX 원본 좌표 복원, portable/Hydra CLI의
+  겹친 박스 보존 및 O2O 방향별 DFL softmax 그래프 검사 통과.
+- `pre-commit run --all-files --show-diff-on-failure` 통과.
+
 
 2026-09-22 검증 결과:
 

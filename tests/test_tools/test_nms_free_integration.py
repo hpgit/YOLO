@@ -8,6 +8,7 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from lightning import Trainer
+from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.plugins import MixedPrecision
 from PIL import Image, ImageDraw
 
@@ -17,7 +18,7 @@ from yolo.utils.checkpoint_utils import YOLOCheckpoint
 from yolo.utils.model_utils import EMA
 
 
-def _config(tmp_path):
+def _config(tmp_path, scheduled_stretch=False):
     generator = torch.Generator().manual_seed(41)
     for index in range(2):
         image = tmp_path / "images" / "val" / f"{index}.png"
@@ -26,7 +27,9 @@ def _config(tmp_path):
         label.parent.mkdir(parents=True, exist_ok=True)
         # Distinct textured inputs avoid pathological tiny-map BatchNorm
         # gradients caused by a batch of identical constant backgrounds.
-        pixels = torch.randint(0, 80, (64, 64, 3), generator=generator, dtype=torch.uint8).numpy()
+        pixels = torch.randint(
+            0, 80, (40, 100, 3) if scheduled_stretch else (64, 64, 3), generator=generator, dtype=torch.uint8
+        ).numpy()
         canvas = Image.fromarray(pixels)
         if index == 0:
             ImageDraw.Draw(canvas).rectangle((16, 16, 48, 48), fill=(180, 90, 40))
@@ -56,16 +59,35 @@ def _config(tmp_path):
                 "use_wandb=false",
             ],
         )
-    cfg.task.data.data_augment = {}
+    if scheduled_stretch:
+        cfg.resize_mode = "stretch"
+        cfg.task.close_mosaic = 1
+        cfg.task.data.data_augment.YOLOv9.albumentations = False
+    else:
+        cfg.task.data.data_augment = {}
     return cfg
 
 
+class MosaicObserver(Callback):
+    def __init__(self, stop=False):
+        self.stop = stop
+        self.seen = []
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        self.seen.append((trainer.current_epoch, pl_module.train_loader.dataset.transform.hyp["mosaic"]))
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if self.stop:
+            trainer.should_stop = True
+
+
+@pytest.mark.parametrize("scheduled_stretch", [False, True])
 @pytest.mark.parametrize(
     "accelerator",
     ["cpu", pytest.param("gpu", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"))],
 )
-def test_fit_ema_checkpoint_resume_without_nms(tmp_path, accelerator):
-    cfg = _config(tmp_path)
+def test_fit_ema_checkpoint_resume_without_nms(tmp_path, accelerator, scheduled_stretch):
+    cfg = _config(tmp_path, scheduled_stretch)
     torch.manual_seed(20)
     model = TrainModel(cfg)
     initial = {key: value.detach().clone() for key, value in model.model.named_parameters()}
@@ -86,9 +108,14 @@ def test_fit_ema_checkpoint_resume_without_nms(tmp_path, accelerator):
         # back off through expected warmup overflows on random YOLO weights.
         options["plugins"] = [MixedPrecision("16-mixed", "cuda", scaler=torch.amp.GradScaler("cuda", init_scale=128))]
         options.pop("precision")
-    trainer = Trainer(max_epochs=1, callbacks=[ema, checkpoint], **options)
+    observer = MosaicObserver(stop=True)
+    callbacks = [ema, checkpoint] + ([observer] if scheduled_stretch else [])
+    trainer = Trainer(max_epochs=2 if scheduled_stretch else 1, callbacks=callbacks, **options)
     with patch("yolo.utils.bounding_box_utils.batched_nms", side_effect=AssertionError("NMS was called")):
         trainer.fit(model)
+    if scheduled_stretch:
+        assert observer.seen == [(0, cfg.task.data.data_augment.YOLOv9.mosaic)]
+        assert model.train_loader.dataset.transform.resize_mode == "stretch"
     assert model.post_process.nms_free
     assert trainer.global_step == 1
     assert ema.step == 1
@@ -110,9 +137,15 @@ def test_fit_ema_checkpoint_resume_without_nms(tmp_path, accelerator):
 
     resumed_model = TrainModel(cfg)
     resumed_ema = EMA(cfg.task.ema.decay)
-    resumed = Trainer(max_epochs=2, callbacks=[resumed_ema, YOLOCheckpoint(tmp_path / "checkpoints")], **options)
+    resumed_observer = MosaicObserver()
+    callbacks = [resumed_ema, YOLOCheckpoint(tmp_path / "checkpoints")] + (
+        [resumed_observer] if scheduled_stretch else []
+    )
+    resumed = Trainer(max_epochs=2, callbacks=callbacks, **options)
     with patch("yolo.utils.bounding_box_utils.batched_nms", side_effect=AssertionError("NMS was called")):
         resumed.fit(resumed_model, ckpt_path=checkpoint.best_model_path)
+    if scheduled_stretch:
+        assert resumed_observer.seen == [(1, 0.0)]
     assert resumed.global_step == 2
     assert resumed_ema.step == 2
     assert resumed_model.post_process.nms_free

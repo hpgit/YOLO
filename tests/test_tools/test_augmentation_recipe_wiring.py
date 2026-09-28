@@ -41,7 +41,8 @@ def test_recipe_cannot_be_applied_to_validation_or_combined_with_legacy_transfor
         create_dataloader(cfg.task.data, cfg.dataset, "train")
 
 
-def test_default_recipe_uses_polygon_dataset_and_uncapped_collation(tmp_path):
+@pytest.mark.parametrize("close_mosaic", [0, 1])
+def test_default_recipe_uses_polygon_dataset_and_uncapped_collation(tmp_path, monkeypatch, close_mosaic):
     from yolo.tools.yolov9_dataset import YOLOv9Dataset
 
     image_path = tmp_path / "images" / "train" / "polygon.png"
@@ -56,7 +57,18 @@ def test_default_recipe_uses_polygon_dataset_and_uncapped_collation(tmp_path):
     cfg.dataset.auto_download = None
     blur = cfg.task.data.data_augment.YOLOv9
     assert (blur.motion_blur, blur.motion_blur_kernel_size, blur.motion_blur_strength) == (0.1, 3, 0.5)
-    loader = create_dataloader(cfg.task.data, cfg.dataset, "train")
+    assert cfg.task.close_mosaic == 0
+    loader = create_dataloader(
+        cfg.task.data, cfg.dataset, "train", close_mosaic=close_mosaic, epoch_provider=lambda: (0, 1)
+    )
+    if close_mosaic:
+
+        def unexpected_sample(*args):
+            raise AssertionError("Closed mosaic must not load extra Mosaic/MixUp samples")
+
+        monkeypatch.setattr(loader.dataset, "get_sample", unexpected_sample)
+    next(iter(loader))
+    assert loader.dataset.transform.hyp["mosaic"] == (0.0 if close_mosaic else 1.0)
     assert isinstance(loader.dataset, YOLOv9Dataset)
     assert loader.dataset.img_paths == [image_path]
     assert loader.dataset.segments[0][0].shape == (4, 2)

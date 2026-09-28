@@ -18,6 +18,9 @@ from yolo.utils.logging_utils import set_seed, setup
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: Config):
+    if isinstance(getattr(cfg, "image_size", None), int):
+        cfg.image_size = [cfg.image_size, cfg.image_size]
+
     # Seed before constructing models, datasets, callbacks, or the Trainer.
     set_seed(cfg.lucky_number)
     if cfg.task.task == "export":

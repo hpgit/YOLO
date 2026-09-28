@@ -24,6 +24,7 @@ from yolo.utils.bounding_box_utils import Anc2Box, Vec2Box, bbox_nms, transform_
 from yolo.utils.ema_utils import foreach_ema_update
 from yolo.utils.logger import logger
 from yolo.utils.nms_utils import select_nms_free_detections
+from yolo.utils.resize import restore_boxes
 
 
 def lerp(start: float, end: float, step: Union[int, float], total: int = 1):
@@ -250,7 +251,7 @@ class PostProcess:
         pred_class, _, pred_bbox = prediction[:3]
         pred_conf = prediction[3] if len(prediction) == 4 else None
         if rev_tensor is not None:
-            pred_bbox = (pred_bbox - rev_tensor[:, None, 1:]) / rev_tensor[:, 0:1, None]
+            pred_bbox = restore_boxes(pred_bbox, rev_tensor)
         if self.nms_free:
             scores = pred_class.sigmoid() * (1 if pred_conf is None else pred_conf)
             return select_nms_free_detections(pred_bbox, scores, self.nms.min_confidence, self.nms.max_bbox)
@@ -284,9 +285,8 @@ def predicts_to_json(img_paths, predicts, rev_tensor):
     """
     batch_json = []
     for img_path, bboxes, box_reverse in zip(img_paths, predicts, rev_tensor):
-        scale, shift = box_reverse.split([1, 4])
         bboxes = bboxes.clone()
-        bboxes[:, 1:5] = (bboxes[:, 1:5] - shift[None]) / scale[None]
+        bboxes[:, 1:5] = restore_boxes(bboxes[:, 1:5], box_reverse)
         bboxes[:, 1:5] = transform_bbox(bboxes[:, 1:5], "xyxy -> xywh")
         for cls, *pos, conf in bboxes:
             bbox = {

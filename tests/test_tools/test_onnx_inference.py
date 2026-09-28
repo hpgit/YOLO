@@ -14,7 +14,7 @@ from PIL import Image
 from yolo.tools.onnx_inference import ONNXDetector, class_aware_nms, run_inference
 
 
-def write_model(path, *, batch=1, metadata=True, dfl=False):
+def write_model(path, *, batch=1, metadata=True, dfl=False, nms_free=False):
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
     if dfl:
@@ -25,6 +25,8 @@ def write_model(path, *, batch=1, metadata=True, dfl=False):
     else:
         predictions = np.array([[[16, 4, 48, 28, 0.9, 0.1]]] * batch, dtype=np.float32)
         width, height = 64, 32
+    if nms_free:
+        predictions = np.repeat(predictions, 2, axis=1)
     graph = onnx.helper.make_graph(
         [onnx.helper.make_node("Constant", [], ["predictions"], value=onnx.numpy_helper.from_array(predictions))],
         "portable-test",
@@ -41,6 +43,8 @@ def write_model(path, *, batch=1, metadata=True, dfl=False):
                         "version": 1,
                         "output_format": "dfl" if dfl else "xyxy",
                         "class_num": 2,
+                        "nms_free": nms_free,
+                        "postprocess": "topk" if nms_free else "nms",
                         "class_names": ["first", "second"],
                         "reg_max": 3,
                         "strides": [32],
@@ -66,7 +70,7 @@ def test_preprocess_rgb_normalization_and_inverse_letterbox(tmp_path):
     image = Image.new("RGB", (80, 80), (255, 0, 0))
     tensor, transform = detector.preprocess(image)
     assert tensor.shape == (3, 32, 64)
-    np.testing.assert_allclose(tensor[:, 0, 0], np.full(3, 114 / 255), atol=1e-7)
+    np.testing.assert_allclose(tensor[:, 0, 0], np.zeros(3), atol=1e-7)
     np.testing.assert_allclose(tensor[:, 10, 20], [1, 0, 0])
     np.testing.assert_allclose(detector.predict(image)[0], [[0, 0, 10, 80, 70, 0.9]], atol=1e-5)
     # Account for rounding of the resized height, rather than an idealized scale.
@@ -114,9 +118,11 @@ def test_fixed_batch_final_padding_and_unsaved_run(tmp_path):
     assert run_inference(detector, source) == 3
 
 
+@pytest.mark.parametrize("nms_free", [False, True])
 @pytest.mark.parametrize("entry", ["portable", "hydra", "hydra-no-save"])
-def test_real_cli_outside_repo(tmp_path, entry):
-    path = write_model(tmp_path / "model.onnx", batch=2)
+@pytest.mark.parametrize("resize_mode", ["letterbox", "stretch"])
+def test_real_cli_outside_repo(tmp_path, entry, resize_mode, nms_free):
+    path = write_model(tmp_path / "model.onnx", batch=2, nms_free=nms_free)
     source = tmp_path / "inputs"
     source.mkdir()
     for index in range(3):
@@ -164,12 +170,19 @@ def test_real_cli_outside_repo(tmp_path, entry):
         ]
         if entry == "hydra-no-save":
             command.extend(["task.save_predict=false", "task.fast_inference=onnx"])
+    command.extend(["--resize-mode", resize_mode] if entry == "portable" else [f"resize_mode={resize_mode}"])
     result = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr
     expected = set() if entry == "hydra-no-save" else {output / f"frame{index:08d}.jpg" for index in range(3)}
     assert set(tmp_path.rglob("*.jpg")) == expected
     if expected:
-        assert len((output / "predictions.jsonl").read_text().splitlines()) == 3
+        records = [json.loads(line) for line in (output / "predictions.jsonl").read_text().splitlines()]
+        assert len(records) == 3
+        expected_box = [20, 10, 60, 70] if resize_mode == "stretch" else [0, 10, 80, 70]
+        for record in records:
+            assert len(record["detections"]) == (2 if nms_free else 1)
+            for detection in record["detections"]:
+                np.testing.assert_allclose(detection[1:5], expected_box)
 
 
 def test_dispatch_without_pytorch_model_or_trainer(monkeypatch):
@@ -199,3 +212,31 @@ def test_video_all_frames_and_read_errors(tmp_path):
         run_inference(detector, tmp_path / "missing.png")
     with pytest.raises(ValueError, match="Unavailable ONNX providers"):
         ONNXDetector(tmp_path / "model.onnx", providers=["UnknownProvider"])
+
+
+def test_stretch_preprocess_and_metadata_fallback_override(tmp_path):
+    import onnx
+    import torch
+
+    from yolo.tools.data_augmentation import PadAndResize
+
+    path = write_model(tmp_path / "model.onnx")
+    model = onnx.load(path)
+    metadata = json.loads(model.metadata_props[0].value)
+    metadata["resize_mode"] = "stretch"
+    onnx.helper.set_model_props(model, {"yolo.inference": json.dumps(metadata)})
+    onnx.save(model, path)
+    detector = ONNXDetector(path, threads=1)
+    assert detector.resize_mode == "stretch"
+    for width, height in [(101, 37), (37, 101), (80, 80)]:
+        image = Image.fromarray(np.random.default_rng(2).integers(0, 256, (height, width, 3), dtype=np.uint8))
+        tensor, transform = detector.preprocess(image)
+        reference, _, _ = PadAndResize([64, 32], resize_mode="stretch")(image, torch.zeros(0, 5))
+        np.testing.assert_array_equal(tensor, np.asarray(reference, dtype=np.float32).transpose(2, 0, 1) / 255)
+        assert transform == (64 / width, 32 / height, 0, 0, width, height)
+        np.testing.assert_allclose(
+            detector.predict(image)[0][0, 1:5], [width / 4, height / 8, width * 3 / 4, height * 7 / 8], atol=1e-5
+        )
+    assert ONNXDetector(path, threads=1, resize_mode="letterbox").resize_mode == "letterbox"
+    with pytest.raises(ValueError, match="resize_mode"):
+        ONNXDetector(path, threads=1, resize_mode="strech")

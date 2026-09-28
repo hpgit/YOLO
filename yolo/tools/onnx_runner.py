@@ -23,6 +23,7 @@ def run_onnx_inference(cfg):
         max_detections=cfg.task.nms.max_bbox,
         threads=cfg.cpu_num,
         nms_free=getattr(cfg.model, "nms_free", False),
+        resize_mode=getattr(cfg.task.data, "resize_mode", "letterbox"),
     )
     # New metadata is authoritative. Old exports use the matching dataset config.
     if "yolo.inference" not in detector.session.get_modelmeta().custom_metadata_map:

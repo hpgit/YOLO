@@ -102,7 +102,7 @@ def test_no_mosaic_identity_geometry_only_adds_expected_letterbox_padding():
 
     output, output_boxes, reverse = augmentation(image, boxes)
 
-    expected_image = np.full((64, 64, 3), 114, dtype=np.uint8)
+    expected_image = np.full((64, 64, 3), 0, dtype=np.uint8)
     expected_image[16:48] = image
     expected_image = torch.from_numpy(expected_image.transpose(2, 0, 1).copy()).float() / 255
     expected_boxes = torch.tensor([[4, 0.25, 0.375, 0.75, 0.625]], dtype=torch.float32)
@@ -192,3 +192,22 @@ def test_invalid_image_sizes_are_rejected(image_size):
 def test_invalid_probabilities_are_rejected(name, value):
     with pytest.raises(ValueError, match=name):
         YOLOv9Augmentation(64, albumentations=False, **{name: value})
+
+
+@pytest.mark.parametrize("mosaic,mixup", [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
+def test_stretch_matches_explicitly_stretched_source_geometry(mosaic, mixup):
+    import cv2
+
+    samples = [_sample(value, index) for index, value in enumerate((40, 70, 100, 130))]
+    stretched = [
+        (cv2.resize(image, (64, 64)), boxes.copy(), copy.deepcopy(segments)) for image, boxes, segments in samples
+    ]
+    settings = _disabled_hyp(mosaic=mosaic, mixup=mixup, copy_paste=1.0 if mosaic else 0.0)
+    random.seed(23)
+    np.random.seed(23)
+    actual = YOLOv9Augmentation(64, resize_mode="stretch", **settings)(*samples[0], _SamplePool(samples))
+    random.seed(23)
+    np.random.seed(23)
+    expected = YOLOv9Augmentation(64, **settings)(*stretched[0], _SamplePool(stretched))
+    for observed, reference in zip(actual, expected):
+        torch.testing.assert_close(observed, reference, rtol=0, atol=0)

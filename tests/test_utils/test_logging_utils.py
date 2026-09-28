@@ -184,3 +184,55 @@ def test_quiet_summary_times_exclude_validation(tmp_path, monkeypatch, capsys, i
     else:
         assert output == ""
         assert not result_path.exists()
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_checkpoint_resume_continues_epoch_display(tmp_path, quiet):
+    class RecordingProgress(YOLORichProgressBar):
+        def __init__(self):
+            super().__init__()
+            self.epoch_starts = []
+            self.batch_progress = []
+
+        def on_train_epoch_start(self, trainer, pl_module):
+            super().on_train_epoch_start(trainer, pl_module)
+            task = self.progress.tasks[self.task_epoch]
+            self.epoch_starts.append((trainer.current_epoch, task.completed, task.total))
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            super().on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
+            task = self.progress.tasks[self.task_epoch]
+            self.batch_progress.append((task.completed, task.description))
+
+    loader = DataLoader(TensorDataset(torch.ones(4, 2)), batch_size=2)
+    result_path = tmp_path / "result.log"
+
+    def fit(epochs, checkpoint=None):
+        progress = YOLOQuietEpochSummary(result_path) if quiet else RecordingProgress()
+        trainer = Trainer(
+            accelerator="cpu",
+            devices=1,
+            max_epochs=epochs,
+            callbacks=[progress],
+            logger=False,
+            enable_progress_bar=not quiet,
+            enable_model_summary=False,
+            num_sanity_val_steps=0,
+            default_root_dir=tmp_path,
+        )
+        trainer.fit(ProgressTestModel(), train_dataloaders=loader, val_dataloaders=loader, ckpt_path=checkpoint)
+        return trainer, progress
+
+    first, initial_progress = fit(2)
+    checkpoint = first.checkpoint_callback.best_model_path
+    resumed, progress = fit(4, checkpoint)
+    assert resumed.global_step == 8
+    if quiet:
+        lines = result_path.read_text().splitlines()
+        assert [line.split(" | ")[0] for line in lines] == ["Epoch 1", "Epoch 2", "Epoch 3", "Epoch 4"]
+    else:
+        assert initial_progress.epoch_starts == [(0, 0, 2), (1, 1, 2)]
+        assert progress.epoch_starts == [(2, 2, 4), (3, 3, 4)]
+        assert [value for value, _ in progress.batch_progress] == [2.5, 3, 3.5, 4]
+        assert "Epoch 3/4" in progress.batch_progress[0][1]
+        assert "Epoch 4/4" in progress.batch_progress[-1][1]

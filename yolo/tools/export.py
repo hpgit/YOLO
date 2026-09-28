@@ -47,9 +47,12 @@ class ExportAnchorProbabilities(nn.Module):
     def forward(self, anchor_x):
         batch, _, height, width = anchor_x.shape
         logits = anchor_x.reshape(batch, 4, self.reg_max, height * width)
-        # [B, H*W, 4, R]: normalize each direction over its own bins.
-        probabilities = logits.permute(0, 3, 1, 2).softmax(dim=-1)
-        return logits, probabilities.flatten(2)
+        # Move each direction's bins behind the locations before normalizing them.
+        directions = anchor_x.split(self.reg_max, dim=1)
+        probabilities = torch.cat(
+            [direction.permute(0, 2, 3, 1).softmax(dim=-1).flatten(1, 2) for direction in directions], dim=-1
+        )
+        return logits, probabilities
 
 
 class ExportModel(nn.Module):
@@ -167,6 +170,9 @@ def validate_onnx_tensor_ranks(model):
 
 def export_model(cfg: Config) -> Path:
     """Run an export without a Trainer, dataset download or experiment logger."""
+    from yolo.utils.resize import validate_resize_mode
+
+    resize_mode = validate_resize_mode(getattr(cfg, "resize_mode", "letterbox"))
     task = cfg.task
     qdq = getattr(task, "qdq", False)
     if qdq and task.format != "onnx":
@@ -239,6 +245,7 @@ def export_model(cfg: Config) -> Path:
         onnx.checker.check_model(exported)
         # Carry the decoder contract with the artifact, including custom heads.
         metadata = {
+            "resize_mode": resize_mode,
             "version": 1,
             "output_format": "dfl" if wrapper.probabilities else "xyxy",
             "class_num": wrapper.class_num,
