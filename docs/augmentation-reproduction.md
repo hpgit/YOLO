@@ -2,8 +2,8 @@
 
 기본 학습 설정은 원본 WongKinYiu/yolov9의
 [`hyp.scratch-high.yaml`](https://github.com/WongKinYiu/yolov9/blob/5b1ea9a8b3f0ffe4fe0e203ec6232d788bb3fcff/data/hyps/hyp.scratch-high.yaml)을
-따르는 `data_augment.YOLOv9` recipe를 사용한다. 요청에 따라 **학습 마지막 구간의 mosaic 종료는 적용하지 않는다.**
-설정된 mosaic 확률은 마지막 epoch까지 유지된다. 원본 소스를 프로젝트에 복사하지 않고 동작을 독립적으로 구현했다.
+따르는 `data_augment.YOLOv9` recipe를 사용한다. **기본값은 마지막 epoch까지 mosaic 확률을 유지한다.**
+`task.close_mosaic`으로 마지막 N epoch 동안 mosaic을 끌 수 있다. 원본 소스를 프로젝트에 복사하지 않고 동작을 독립적으로 구현했다.
 현재 기본 학습 설정에는 요청에 따라 약한 motion blur도 추가되어 있다. 원본 증강과의
 parity 비교에서는 아래 motion blur를 비활성화한다.
 현재 패딩·mosaic canvas·affine/perspective 테두리는 검정색 `(0, 0, 0)`을 사용한다.
@@ -24,6 +24,24 @@ parity 비교에서는 아래 motion blur를 비활성화한다.
 Copy-paste의 0.3은 모든 이미지에 대한 30% gate가 아니라, 뒤집은 박스와 기존 박스의 IOA가
 모두 0.3 미만인 후보 중 `round(0.3 × 후보 수)`를 선택하는 비율이다. 실제 polygon이 있는 객체만
 대상이며 bbox를 사각형 마스크로 꾸며 copy-paste하지 않는다.
+
+## 마지막 N epoch에서 mosaic 종료
+
+```bash
+yolo task=train task.epoch=100 task.close_mosaic=15
+```
+
+위 설정은 1~85 epoch에서 설정된 mosaic 확률을 사용하고, 86~100 epoch에서 0으로 바꾼다.
+`task.close_mosaic=0`(기본값)은 자동 종료를 비활성화한다. 음수·실수·bool은 허용하지 않는다.
+N이 총 epoch 이상이면 처음부터 mosaic을 끈다. 기존 mosaic 확률이 0이면 계속 꺼져 있다.
+총 epoch는 실행 중인 `Trainer.max_epochs`를 기준으로 하며, checkpoint 재개 시 복원된 현재
+epoch에서 다시 계산한다. 재개할 때도 `task.close_mosaic` 설정을 동일하게 지정한다.
+
+이 옵션은 `YOLOv9` 학습 recipe에만 적용된다. Mosaic 분기 안의 MixUp·Copy-Paste도 함께
+중단되며, 단일 이미지 기하 변환·HSV·flip·motion blur 등은 유지된다.
+DataLoader iterator 생성 시 worker prefetch보다 먼저 확률을 변경하므로 첫 배치부터 적용된다.
+현재 로더처럼 `persistent_workers=False`를 사용해야 하며, True는 오류로 거부한다.
+DDP에서는 각 rank의 현재 epoch를 사용한다. 조기 종료 시점을 미리 예측하여 끄지는 않는다.
 
 ## 실행 순서
 

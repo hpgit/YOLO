@@ -143,7 +143,13 @@ class TrainModel(ValidateModel):
         self.cfg = cfg
         self.automatic_optimization = False
         self._last_opt_step = -1
-        self.train_loader = create_dataloader(self.cfg.task.data, self.cfg.dataset, self.cfg.task.task)
+        self.train_loader = create_dataloader(
+            self.cfg.task.data,
+            self.cfg.dataset,
+            self.cfg.task.task,
+            close_mosaic=getattr(self.cfg.task, "close_mosaic", 0),
+            epoch_provider=self._mosaic_epoch,
+        )
 
     def setup(self, stage):
         if hasattr(self.model, "qat_metadata") and self.trainer.world_size != 1:
@@ -154,6 +160,12 @@ class TrainModel(ValidateModel):
             raise ValueError("QAT requires precision='32-true'; mixed precision is not supported.")
         super().setup(stage)
         self.loss_fn = create_loss_function(self.cfg, self.vec2box)
+
+    def _mosaic_epoch(self):
+        # Lightning starts prefetch before on_train_start normalizes the public
+        # current_epoch after resume. Use the processed counter, as its sampler
+        # epoch setup does, so an epoch-end checkpoint starts with the new policy.
+        return self.trainer.fit_loop.epoch_progress.current.processed, self.trainer.max_epochs
 
     def train_dataloader(self):
         return self.train_loader

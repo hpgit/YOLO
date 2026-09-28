@@ -246,7 +246,7 @@ def test_lightning_train_resume_and_best_checkpoint(tmp_path, monkeypatch, warmu
         return 2, images, targets, None, ["first.jpg", "second.jpg"]
 
     loader = DataLoader(range(4), batch_size=2, collate_fn=collate)
-    monkeypatch.setattr("yolo.tools.solver.create_dataloader", lambda *args: loader)
+    monkeypatch.setattr("yolo.tools.solver.create_dataloader", lambda *args, **kwargs: loader)
     callback = YOLOCheckpoint(tmp_path)
 
     def trainer(epochs, callbacks):

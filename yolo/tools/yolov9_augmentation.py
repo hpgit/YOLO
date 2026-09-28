@@ -314,8 +314,8 @@ class YOLOv9Augmentation:
 
     ``get_sample`` is required when mosaic is selected.  Every callback call
     returns ``(RGB image, normalized xyxy boxes, aligned normalized segments)``.
-    Mosaic remains eligible for the whole training run; this class deliberately
-    has no late-epoch mosaic shutdown state.
+    The training loader may set hyp["mosaic"] to zero for the final epochs
+    before starting worker prefetch; this transform does not track epochs.
     """
 
     def __init__(self, image_size: object = 640, resize_mode: str = "letterbox", **hyp: object) -> None:

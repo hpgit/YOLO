@@ -143,6 +143,7 @@ class TrainConfig:
     scheduler: SchedulerConfig
     ema: EMAConfig
     validation: ValidationConfig
+    close_mosaic: int = 0
     gradient_clip_val: float = 10.0
     gradient_clip_algorithm: str = "norm"
 
