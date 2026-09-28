@@ -99,6 +99,7 @@ def test_validation_uses_official_gt_and_resets_at_epoch_end(configs):
     prediction = torch.tensor([[0.0, 10.0, 10.0, 30.0, 30.0, 0.9]])
     module = SimpleNamespace(
         metric=metric,
+        validation_cfg=validation,
         ema=Mock(),
         post_process=Mock(return_value=[prediction]),
         device=torch.device("cpu"),
@@ -225,3 +226,19 @@ def test_training_sanity_validation_and_checkpoint_monitor_use_coco_json(configs
         torch.testing.assert_close(resumed_model.model.state_dict()[key], value, rtol=0, atol=0)
     for key, value in reference_ema.ema_state_dict.items():
         torch.testing.assert_close(resumed_ema.ema_state_dict[key], value, rtol=0, atol=0)
+
+
+def test_validation_step_forwards_stretch_policy(configs):
+    validation, dataset = configs
+    validation.data.resize_mode = "stretch"
+    metric = create_validation_metric(validation, dataset)
+    module = SimpleNamespace(
+        metric=metric,
+        validation_cfg=validation,
+        ema=Mock(),
+        post_process=Mock(return_value=[torch.tensor([[0, 6.4, 3.2, 19.2, 9.6, 0.9]])]),
+    )
+    batch = (1, torch.zeros(1, 3, 32, 64), torch.zeros(1, 0, 5), None, ["sample.jpg"])
+    ValidateModel.validation_step(module, batch, 0)
+    assert metric.predictions[0]["bbox"] == pytest.approx([10, 10, 20, 20], abs=1e-5)
+    assert metric.compute()["map"].item() == pytest.approx(1.0)

@@ -21,6 +21,8 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from torch import Tensor
 
+from yolo.utils.resize import validate_resize_mode
+
 METRIC_NAMES = (
     "map",
     "map_50",
@@ -62,7 +64,7 @@ class CocoJsonEvaluator:
 
     ``update`` expects one tensor per image with rows ordered as
     ``[contiguous_class, x1, y1, x2, y2, score]``.  Coordinates are in the
-    padded model input described by the shared ``image_size=[width, height]``.
+    resized model input described by the shared ``image_size=[width, height]``.
     Contiguous classes are mapped to category IDs sorted in the same way as
     :func:`yolo.tools.data_conversion.discretize_categories`.
     """
@@ -233,6 +235,7 @@ class CocoJsonEvaluator:
         image_id,
         target_width: int,
         target_height: int,
+        resize_mode: str = "letterbox",
     ) -> List[Dict]:
         if not isinstance(prediction, Tensor):
             raise TypeError("each prediction must be a torch.Tensor")
@@ -245,6 +248,8 @@ class CocoJsonEvaluator:
         scale = min(target_width / original_width, target_height / original_height)
         resized_width = int(original_width * scale)
         resized_height = int(original_height * scale)
+        if resize_mode == "stretch":
+            resized_width, resized_height = target_width, target_height
         if resized_width <= 0 or resized_height <= 0:
             raise ValueError("model image_size is too small for image ID {!r}".format(image_id))
         pad_left = (target_width - resized_width) // 2
@@ -286,15 +291,17 @@ class CocoJsonEvaluator:
         predictions: Sequence[Tensor],
         image_paths: Sequence[Union[str, os.PathLike]],
         image_size: Sequence[int],
+        resize_mode: str = "letterbox",
     ) -> None:
-        """Add one batch of padded-input detections to the evaluation state."""
+        """Add one batch of model-input detections using the supplied resize policy."""
+        resize_mode = validate_resize_mode(resize_mode)
         target_width, target_height = self._validate_image_size(image_size)
         if len(predictions) != len(image_paths):
             raise ValueError("predictions and image_paths must have the same length")
 
         for prediction, image_path in zip(predictions, image_paths):
             image_id = self._resolve_image_id(image_path)
-            detections = self._convert_predictions(prediction, image_id, target_width, target_height)
+            detections = self._convert_predictions(prediction, image_id, target_width, target_height, resize_mode)
             if image_id in self._records:
                 if self._records[image_id] != detections:
                     raise ValueError("conflicting predictions were supplied for image ID {!r}".format(image_id))

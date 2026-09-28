@@ -65,7 +65,9 @@ class YOLOv9Dataset(Dataset):
         augment_cfg = _config_get(data_cfg.data_augment, "YOLOv9", None)
         if augment_cfg is None:
             raise ValueError("data_augment.YOLOv9 is required for YOLOv9Dataset")
-        self.transform = YOLOv9Augmentation(self.image_size, **dict(augment_cfg))
+        self.transform = YOLOv9Augmentation(
+            self.image_size, resize_mode=getattr(data_cfg, "resize_mode", "letterbox"), **dict(augment_cfg)
+        )
 
         self.img_paths, self.bboxes, self.segments = [], [], []
         for phase_name in phase_names:

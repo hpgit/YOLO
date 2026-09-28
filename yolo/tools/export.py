@@ -167,6 +167,9 @@ def validate_onnx_tensor_ranks(model):
 
 def export_model(cfg: Config) -> Path:
     """Run an export without a Trainer, dataset download or experiment logger."""
+    from yolo.utils.resize import validate_resize_mode
+
+    resize_mode = validate_resize_mode(getattr(cfg, "resize_mode", "letterbox"))
     task = cfg.task
     qdq = getattr(task, "qdq", False)
     if qdq and task.format != "onnx":
@@ -239,6 +242,7 @@ def export_model(cfg: Config) -> Path:
         onnx.checker.check_model(exported)
         # Carry the decoder contract with the artifact, including custom heads.
         metadata = {
+            "resize_mode": resize_mode,
             "version": 1,
             "output_format": "dfl" if wrapper.probabilities else "xyxy",
             "class_num": wrapper.class_num,

@@ -153,6 +153,7 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
     cfg = export_cfg(
         f"model={version}",
         f"task.dynamic_batch={str(dynamic).lower()}",
+        f"resize_mode={'stretch' if dynamic else 'letterbox'}",
         f"task.output={tmp_path / 'model.onnx'}",
         *([f"model.anchor.reg_max={reg_max}"] if version == "v9-t" else []),
     )
@@ -182,6 +183,7 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
     from yolo.tools.onnx_inference import ONNXDetector
 
     detector = ONNXDetector(path, threads=2)
+    assert detector.resize_mode == cfg.resize_mode
     with torch.no_grad():
         decoded = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name)(images).numpy()
     np.testing.assert_allclose(detector(images.numpy()), decoded, rtol=1e-4, atol=1e-4)

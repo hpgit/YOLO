@@ -3,6 +3,8 @@ device: auto
 cpu_num: 16
 
 image_size: [640, 640]
+# letterbox preserves aspect ratio; stretch resizes directly to image_size.
+resize_mode: letterbox
 
 out_path: runs
 exist_ok: True

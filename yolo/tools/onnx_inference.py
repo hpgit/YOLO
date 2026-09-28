@@ -72,6 +72,7 @@ class ONNXDetector:
         iou_threshold=0.5,
         max_detections=300,
         threads=0,
+        resize_mode=None,
     ):
         try:
             import onnxruntime as ort
@@ -112,6 +113,9 @@ class ONNXDetector:
         metadata = json.loads(props.get("yolo.inference", "{}"))
         if metadata and metadata.get("version") != 1:
             raise ValueError("Unsupported yolo.inference metadata version.")
+        self.resize_mode = metadata.get("resize_mode", "letterbox") if resize_mode is None else resize_mode
+        if self.resize_mode not in ("letterbox", "stretch"):
+            raise ValueError("resize_mode must be 'letterbox' or 'stretch'")
         self.class_num = metadata.get("class_num", class_num)
         if not isinstance(self.class_num, int) or self.class_num < 1:
             raise ValueError("ONNX has no decoder metadata; supply class_num / --class-num from the export dataset.")
@@ -185,9 +189,15 @@ class ONNXDetector:
         width, height = image.size
         scale = min(self.width / width, self.height / height)
         resized_width, resized_height = max(1, int(width * scale)), max(1, int(height * scale))
+        if self.resize_mode == "stretch":
+            resized_width, resized_height = self.width, self.height
         left, top = (self.width - resized_width) // 2, (self.height - resized_height) // 2
-        padded = Image.new("RGB", (self.width, self.height), (114, 114, 114))
-        padded.paste(image.resize((resized_width, resized_height), Image.Resampling.LANCZOS), (left, top))
+        resized = image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+        if self.resize_mode == "stretch":
+            padded = resized
+        else:
+            padded = Image.new("RGB", (self.width, self.height), (114, 114, 114))
+            padded.paste(resized, (left, top))
         tensor = np.asarray(padded, dtype=np.float32).transpose(2, 0, 1) / 255.0
         # Use actual rounded resize dimensions for exact inverse coordinates.
         transform = (resized_width / width, resized_height / height, left, top, width, height)
@@ -304,6 +314,11 @@ def main():
     parser.add_argument("--threads", type=int, default=0, help="ONNX intra-op threads; 0 uses runtime default")
     parser.add_argument("--class-num", type=int, help="Required for old exports without metadata")
     parser.add_argument("--output-format", choices=["auto", "dfl", "xyxy"], default="auto")
+    parser.add_argument(
+        "--resize-mode",
+        choices=["letterbox", "stretch"],
+        help="Override exported resize mode (old exports default to letterbox)",
+    )
     parser.add_argument("--reg-max", type=int, default=16)
     parser.add_argument("--strides", type=int, nargs="+", default=[8, 16, 32])
     args = parser.parse_args()
@@ -318,6 +333,7 @@ def main():
         iou_threshold=args.iou,
         max_detections=args.max_detections,
         threads=args.threads,
+        resize_mode=args.resize_mode,
     )
     count = run_inference(detector, args.source, args.output)
     print(f"Processed {count} frames; saved results to {args.output}")

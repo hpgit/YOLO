@@ -45,7 +45,9 @@ class YoloDataset(Dataset):
         self.base_size = mean(self.image_size)
 
         transforms = [eval(aug)(prob) for aug, prob in augment_cfg.items()]
-        self.transform = AugmentationComposer(transforms, self.image_size, self.base_size)
+        self.transform = AugmentationComposer(
+            transforms, self.image_size, self.base_size, resize_mode=getattr(data_cfg, "resize_mode", "letterbox")
+        )
         self.transform.get_more_data = self.get_more_data
         data = []
         for phase_name in phase_names:
@@ -313,7 +315,9 @@ class StreamDataLoader:
         self.running = True
         self.is_stream = isinstance(self.source, int) or str(self.source).lower().startswith("rtmp://")
 
-        self.transform = AugmentationComposer([], data_cfg.image_size)
+        self.transform = AugmentationComposer(
+            [], data_cfg.image_size, resize_mode=getattr(data_cfg, "resize_mode", "letterbox")
+        )
         self.stop_event = Event()
         self.source_done = Event()
         self.source_error = None

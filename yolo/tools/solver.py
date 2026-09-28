@@ -109,7 +109,12 @@ class ValidateModel(BaseModel):
         H, W = images.shape[2:]
         predicts = self.post_process(self.ema(images, shortcut="Main"), image_size=[W, H])
         if isinstance(self.metric, CocoJsonEvaluator):
-            self.metric.update(predicts, img_paths, image_size=[W, H])
+            self.metric.update(
+                predicts,
+                img_paths,
+                image_size=[W, H],
+                resize_mode=getattr(self.validation_cfg.data, "resize_mode", "letterbox"),
+            )
         else:
             self.metric.update(
                 [to_metrics_format(predict) for predict in predicts], [to_metrics_format(target) for target in targets]

@@ -8,6 +8,7 @@ onnx:
 data:
   source: demo/images/inference/image.png
   image_size: ${image_size}
+  resize_mode: ${resize_mode}
   data_augment: {}
 nms:
   min_confidence: 0.5
