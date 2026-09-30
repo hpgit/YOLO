@@ -10,7 +10,7 @@ yolo task=train model=v9-sr-t weight=null
 These configurations preserve the corresponding v9 architecture and Main/AUX
 heads. The t/s/c variants preserve the original channels; m widens selected
 channels as described below. The t/s/m variants replace AConv with AConv2; c
-replaces ADown with ADown2. `activation: Hardswish` applies to every active Conv/RepConv
+replaces ADown with ADown2. `activation: SiLU` applies to every active Conv/RepConv
 activation, including nested blocks and both detection heads. Linear RepConv
 branches and detection output layers remain linear. Existing v9 configurations
 retain their original activations and pooling.

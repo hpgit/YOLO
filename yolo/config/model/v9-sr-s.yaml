@@ -1,5 +1,5 @@
 name: v9-sr-s
-activation: Hardswish
+activation: SiLU
 
 anchor:
   reg_max: 16

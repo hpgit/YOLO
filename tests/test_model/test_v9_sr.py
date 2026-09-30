@@ -81,7 +81,7 @@ def test_sr_config_forward_backward_optimizer_and_ema(size):
     baseline = OmegaConf.to_container(OmegaConf.load(CONFIG_ROOT / f"v9-{size}.yaml"))
     expected = deepcopy(baseline)
     expected["name"] = f"v9-sr-{size}"
-    expected["activation"] = "Hardswish"
+    expected["activation"] = "SiLU"
     for layers in expected["model"].values():
         for layer in layers:
             name = next(iter(layer))
@@ -104,16 +104,16 @@ def test_sr_config_forward_backward_optimizer_and_ema(size):
     blocks = [module for module in model.modules() if isinstance(module, (AConv2, ADown2))]
     assert len(blocks) == (5 if size in {"t", "s"} else 8)
     assert all(type(block) is (ADown2 if size == "c" else AConv2) for block in blocks)
-    assert not any(isinstance(module, (nn.SiLU, nn.AvgPool2d)) for module in model.modules())
+    assert not any(isinstance(module, (nn.Hardswish, nn.AvgPool2d)) for module in model.modules())
     for module in model.modules():
         if isinstance(module, (Conv, RepConv)):
-            assert isinstance(module.act, (nn.Hardswish, nn.Identity))
+            assert isinstance(module.act, (nn.SiLU, nn.Identity))
         if isinstance(module, RepConv):
             assert isinstance(module.conv1.act, nn.Identity)
             assert isinstance(module.conv2.act, nn.Identity)
     for tag in ("Main", "AUX"):
         head = model.model[model.layer_index[tag] - 1]
-        assert all(isinstance(module.act, nn.Hardswish) for module in head.modules() if isinstance(module, Conv))
+        assert all(isinstance(module.act, nn.SiLU) for module in head.modules() if isinstance(module, Conv))
 
     optimizer = create_optimizer(model, cfg.task.optimizer)
     before = model.model[0].conv.weight.detach().clone()
@@ -187,6 +187,7 @@ def test_sr_m_convolution_inputs_are_aligned_without_shrinking(class_num):
 
 def test_sr_activation_does_not_change_original_model_defaults():
     sr_cfg = OmegaConf.load(CONFIG_ROOT / "v9-sr-t.yaml")
+    sr_cfg.activation = "Hardswish"
     create_model(sr_cfg, weight_path=None)
     original = create_model(OmegaConf.load(CONFIG_ROOT / "v9-t.yaml"), weight_path=None)
     assert isinstance(original.model[0].act, nn.SiLU)
