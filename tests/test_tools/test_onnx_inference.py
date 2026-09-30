@@ -14,7 +14,7 @@ from PIL import Image
 from yolo.tools.onnx_inference import ONNXDetector, class_aware_nms, run_inference
 
 
-def write_model(path, *, batch=1, metadata=True, dfl=False):
+def write_model(path, *, batch=1, metadata=True, dfl=False, nms_free=False):
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
     if dfl:
@@ -25,6 +25,8 @@ def write_model(path, *, batch=1, metadata=True, dfl=False):
     else:
         predictions = np.array([[[16, 4, 48, 28, 0.9, 0.1]]] * batch, dtype=np.float32)
         width, height = 64, 32
+    if nms_free:
+        predictions = np.repeat(predictions, 2, axis=1)
     graph = onnx.helper.make_graph(
         [onnx.helper.make_node("Constant", [], ["predictions"], value=onnx.numpy_helper.from_array(predictions))],
         "portable-test",
@@ -41,6 +43,8 @@ def write_model(path, *, batch=1, metadata=True, dfl=False):
                         "version": 1,
                         "output_format": "dfl" if dfl else "xyxy",
                         "class_num": 2,
+                        "nms_free": nms_free,
+                        "postprocess": "topk" if nms_free else "nms",
                         "class_names": ["first", "second"],
                         "reg_max": 3,
                         "strides": [32],
@@ -114,10 +118,11 @@ def test_fixed_batch_final_padding_and_unsaved_run(tmp_path):
     assert run_inference(detector, source) == 3
 
 
+@pytest.mark.parametrize("nms_free", [False, True])
 @pytest.mark.parametrize("entry", ["portable", "hydra", "hydra-no-save"])
 @pytest.mark.parametrize("resize_mode", ["letterbox", "stretch"])
-def test_real_cli_outside_repo(tmp_path, entry, resize_mode):
-    path = write_model(tmp_path / "model.onnx", batch=2)
+def test_real_cli_outside_repo(tmp_path, entry, resize_mode, nms_free):
+    path = write_model(tmp_path / "model.onnx", batch=2, nms_free=nms_free)
     source = tmp_path / "inputs"
     source.mkdir()
     for index in range(3):
@@ -175,7 +180,9 @@ def test_real_cli_outside_repo(tmp_path, entry, resize_mode):
         assert len(records) == 3
         expected_box = [20, 10, 60, 70] if resize_mode == "stretch" else [0, 10, 80, 70]
         for record in records:
-            np.testing.assert_allclose(record["detections"][0][1:5], expected_box)
+            assert len(record["detections"]) == (2 if nms_free else 1)
+            for detection in record["detections"]:
+                np.testing.assert_allclose(detection[1:5], expected_box)
 
 
 def test_dispatch_without_pytorch_model_or_trainer(monkeypatch):

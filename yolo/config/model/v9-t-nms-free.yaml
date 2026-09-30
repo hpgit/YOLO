@@ -1,0 +1,6 @@
+# Keep the base model name for converter selection and pretrained weight lookup.
+defaults:
+  - v9-t
+  - _self_
+
+nms_free: true

@@ -98,7 +98,8 @@ def test_invalid_mode_rejected(factory):
         factory([64, 64], resize_mode="strech")
 
 
-def test_stretch_yolov9_training_updates_weights_and_validates(tmp_path):
+@pytest.mark.parametrize("nms_free", [False, True])
+def test_stretch_yolov9_training_updates_weights_and_validates(tmp_path, nms_free):
     import json
 
     from lightning import Trainer
@@ -111,6 +112,7 @@ def test_stretch_yolov9_training_updates_weights_and_validates(tmp_path):
         [
             "task=train",
             "model=v9-t",
+            f"model.nms_free={str(nms_free).lower()}",
             "dataset=mock",
             "weight=false",
             "resize_mode=stretch",
@@ -175,6 +177,7 @@ def test_stretch_yolov9_training_updates_weights_and_validates(tmp_path):
         trainer.fit(model)
         assert trainer.global_step == 2
         assert isinstance(model.metric, CocoJsonEvaluator)
+        assert model.post_process.nms_free == nms_free
         assert model.train_loader.dataset.transform.resize_mode == "stretch"
         assert torch.isfinite(trainer.callback_metrics["map"])
         assert not torch.equal(before, next(model.model.parameters()).detach())

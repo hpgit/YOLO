@@ -7,7 +7,7 @@ from omegaconf import ListConfig, OmegaConf
 from torch import nn
 
 from yolo.config.config import ModelConfig, YOLOLayer
-from yolo.model.module import Conv, RepConv
+from yolo.model.module import Conv, MultiheadDetection, RepConv
 from yolo.tools.dataset_preparation import prepare_weight
 from yolo.utils.logger import logger
 from yolo.utils.module_utils import create_activation_function, get_layer_map
@@ -29,7 +29,16 @@ class YOLO(nn.Module):
         self.layer_map = get_layer_map()  # Get the map Dict[str: Module]
         self.model: List[YOLOLayer] = nn.ModuleList()
         self.reg_max = getattr(model_cfg.anchor, "reg_max", 16)
+        self.nms_free = getattr(model_cfg, "nms_free", False)
+        if not isinstance(self.nms_free, bool):
+            raise ValueError("model.nms_free must be a boolean.")
         self.build_model(model_cfg.model)
+        if self.nms_free:
+            main_index = self.layer_index.get("Main")
+            main_head = self.model[main_index - 1] if main_index is not None else None
+            if not isinstance(main_head, MultiheadDetection) or not main_head.output:
+                raise ValueError("NMS-free detection requires a Main MultiheadDetection output.")
+            main_head.enable_nms_free()
         activation = getattr(model_cfg, "activation", None)
         if activation is not None:
             # Include nested backbone/neck and Main/AUX head convolutions, while
@@ -78,6 +87,8 @@ class YOLO(nn.Module):
             layer_idx += 1
 
     def forward(self, x, external: Optional[Dict] = None, shortcut: Optional[str] = None):
+        if self.nms_free and not self.training and shortcut is None:
+            shortcut = "Main"
         y = {0: x, **(external or {})}
         output = dict()
         for index, layer in enumerate(self.model, start=1):
@@ -93,7 +104,10 @@ class YOLO(nn.Module):
             if layer.usable:
                 y[index] = x
             if layer.output:
-                output[layer.tags] = x
+                if self.nms_free and layer.tags == "Main" and isinstance(x, dict):
+                    output.update(x)
+                else:
+                    output[layer.tags] = x
                 if layer.tags == shortcut:
                     return output
         return output
@@ -140,22 +154,44 @@ class YOLO(nn.Module):
         args:
             weights: A OrderedDict containing the new weights.
         """
+        nms_free = getattr(self, "nms_free", False)
         if isinstance(weights, Path):
             weights = torch.load(weights, map_location=torch.device("cpu"), weights_only=False)
+        checkpoint_state = weights.get("model_state_dict", weights.get("state_dict", weights))
+        has_one2one = any(".one2one_heads." in name for name in checkpoint_state)
+        if has_one2one and not nms_free:
+            raise ValueError(
+                "NMS-free checkpoint requires model.nms_free=true; refusing to discard one-to-one weights."
+            )
         if "qat" in weights:
+            if nms_free:
+                raise ValueError("NMS-free detection currently supports floating-point checkpoints only, not QAT.")
             from yolo.tools.qat import load_qat_state
 
             load_qat_state(self, weights)
             return
         if "state_dict" in weights:
-            weights = {name.removeprefix("model.model."): key for name, key in weights["state_dict"].items()}
+            weights = weights["state_dict"]
+        # Accept released inner-module weights, YOLO state_dicts, and Lightning
+        # checkpoints. Preserve both prediction branches for trained dual heads.
+        weights = {name.removeprefix("model.model.").removeprefix("model."): tensor for name, tensor in weights.items()}
         model_state_dict = self.model.state_dict()
+        if has_one2one:
+            invalid_one2one = [
+                name
+                for name, tensor in model_state_dict.items()
+                if ".one2one_heads." in name and (name not in weights or tensor.shape != weights[name].shape)
+            ]
+            if invalid_one2one:
+                raise ValueError("NMS-free checkpoint has missing or incompatible one-to-one weights.")
 
         # TODO1: autoload old version weight
         # TODO2: weight transform if num_class difference
 
         error_dict = {"Mismatch": set(), "Not Found": set()}
         for model_key, model_weight in model_state_dict.items():
+            if nms_free and not has_one2one and ".one2one_heads." in model_key:
+                continue  # Initialized from the loaded dense branch below.
             if model_key not in weights:
                 error_dict["Not Found"].add(tuple(model_key.split(".")[:-2]))
                 continue
@@ -176,6 +212,10 @@ class YOLO(nn.Module):
                 logger.warning(f":warning: Weight {error_name} for Layer {layer_idx}: {', '.join(layer_name)}")
 
         self.model.load_state_dict(model_state_dict)
+        if nms_free and not has_one2one:
+            main_head = self.model[self.layer_index["Main"] - 1]
+            main_head.one2one_heads.load_state_dict(main_head.heads.state_dict())
+            logger.info("Initialized NMS-free one-to-one heads from loaded Main detection weights.")
 
 
 def create_model(
@@ -191,6 +231,8 @@ def create_model(
     """
     OmegaConf.set_struct(model_cfg, False)
     model = YOLO(model_cfg, class_num)
+    if model.nms_free and qat_cfg is not None and qat_cfg.enabled:
+        raise ValueError("NMS-free detection currently supports floating-point training only, not QAT.")
     if weight_path:
         if weight_path == True:
             weight_path = Path("weights") / f"{model_cfg.name}.pt"
