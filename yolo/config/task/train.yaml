@@ -4,6 +4,8 @@ defaults:
   - validation: ../validation
 
 epoch: 500
+# Disable mosaic for the final N epochs; 0 keeps it enabled throughout training.
+close_mosaic: 0
 gradient_clip_val: 10.0
 gradient_clip_algorithm: norm
 
@@ -11,6 +13,7 @@ data:
   batch_size: 16
   equivalent_batch_size: 64
   image_size: ${image_size}
+  resize_mode: ${resize_mode}
   cpu_num: ${cpu_num}
   shuffle: True
   pin_memory: True
@@ -31,6 +34,10 @@ data:
       copy_paste: 0.3
       # Pin the upstream-compatible package API in requirements.txt.
       albumentations: true
+      # Mild motion blur, applied after geometry/photometric transforms.
+      motion_blur: 0.1
+      motion_blur_kernel_size: 3
+      motion_blur_strength: 0.5
 
 optimizer:
   type: SGD
@@ -41,6 +48,8 @@ optimizer:
     nesterov: true
 
 loss:
+  # Additional 1:1 head loss weight when model.nms_free=true.
+  one2one: 1.0
   objective:
     BCELoss: 0.5
     BoxLoss: 7.5

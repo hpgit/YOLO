@@ -7,9 +7,10 @@ from omegaconf import ListConfig, OmegaConf
 from torch import nn
 
 from yolo.config.config import ModelConfig, YOLOLayer
+from yolo.model.module import Conv, MultiheadDetection, RepConv
 from yolo.tools.dataset_preparation import prepare_weight
 from yolo.utils.logger import logger
-from yolo.utils.module_utils import get_layer_map
+from yolo.utils.module_utils import create_activation_function, get_layer_map
 
 
 class YOLO(nn.Module):
@@ -24,12 +25,31 @@ class YOLO(nn.Module):
     def __init__(self, model_cfg: ModelConfig, class_num: int = 80):
         super(YOLO, self).__init__()
         self.num_classes = class_num
+        self.model_name = model_cfg.name
         self.layer_map = get_layer_map()  # Get the map Dict[str: Module]
         self.model: List[YOLOLayer] = nn.ModuleList()
         self.reg_max = getattr(model_cfg.anchor, "reg_max", 16)
         pose_config = getattr(model_cfg, "pose", None)
         self.pose_config = dict(pose_config) if pose_config is not None else None
+        self.nms_free = getattr(model_cfg, "nms_free", False)
+        if not isinstance(self.nms_free, bool):
+            raise ValueError("model.nms_free must be a boolean.")
+        if self.pose_config is not None and self.nms_free:
+            raise ValueError("Pose models do not support model.nms_free=true.")
         self.build_model(model_cfg.model)
+        if self.nms_free:
+            main_index = self.layer_index.get("Main")
+            main_head = self.model[main_index - 1] if main_index is not None else None
+            if not isinstance(main_head, MultiheadDetection) or not main_head.output:
+                raise ValueError("NMS-free detection requires a Main MultiheadDetection output.")
+            main_head.enable_nms_free()
+        activation = getattr(model_cfg, "activation", None)
+        if activation is not None:
+            # Include nested backbone/neck and Main/AUX head convolutions, while
+            # preserving the linear branches inside RepConv for deploy fusion.
+            for module in self.modules():
+                if isinstance(module, (Conv, RepConv)) and not isinstance(module.act, nn.Identity):
+                    module.act = create_activation_function(activation)
 
     def build_model(self, model_arch: Dict[str, List[Dict[str, Dict[str, Dict]]]]):
         self.layer_index = {}
@@ -76,6 +96,8 @@ class YOLO(nn.Module):
             layer_idx += 1
 
     def forward(self, x, external: Optional[Dict] = None, shortcut: Optional[str] = None):
+        if self.nms_free and not self.training and shortcut is None:
+            shortcut = "Main"
         y = {0: x, **(external or {})}
         output = dict()
         for index, layer in enumerate(self.model, start=1):
@@ -91,7 +113,10 @@ class YOLO(nn.Module):
             if layer.usable:
                 y[index] = x
             if layer.output:
-                output[layer.tags] = x
+                if self.nms_free and layer.tags == "Main" and isinstance(x, dict):
+                    output.update(x)
+                else:
+                    output[layer.tags] = x
                 if layer.tags == shortcut:
                     return output
         return output
@@ -138,16 +163,43 @@ class YOLO(nn.Module):
         args:
             weights: A OrderedDict containing the new weights.
         """
+        nms_free = getattr(self, "nms_free", False)
         if isinstance(weights, Path):
             weights = torch.load(weights, map_location=torch.device("cpu"), weights_only=False)
         self.loaded_pose_config = weights.get("pose_config")
-        if self.loaded_pose_config is not None and self.loaded_pose_config != self.pose_config:
+        if self.loaded_pose_config is not None and self.loaded_pose_config != getattr(self, "pose_config", None):
             raise ValueError("Checkpoint pose_config does not match the configured keypoint bins/range/layout.")
-        if "weights" in weights:
-            weights = weights["weights"]
+        checkpoint_state = weights.get("weights", weights.get("model_state_dict", weights.get("state_dict", weights)))
+        has_one2one = any(".one2one_heads." in name for name in checkpoint_state)
+        if has_one2one and not nms_free:
+            raise ValueError(
+                "NMS-free checkpoint requires model.nms_free=true; refusing to discard one-to-one weights."
+            )
+        if "qat" in weights:
+            if getattr(self, "pose_config", None) is not None:
+                raise ValueError("Pose models currently do not support QAT checkpoints.")
+            if nms_free:
+                raise ValueError("NMS-free detection currently supports floating-point checkpoints only, not QAT.")
+            from yolo.tools.qat import load_qat_state
+
+            load_qat_state(self, weights)
+            self.weight_load_report = {"missing": [], "mismatch": []}
+            return
+        weights = checkpoint_state
         if "state_dict" in weights:
-            weights = {name.removeprefix("model.model."): key for name, key in weights["state_dict"].items()}
+            weights = weights["state_dict"]
+        # Accept released inner-module weights, YOLO state_dicts, and Lightning
+        # checkpoints. Preserve both prediction branches for trained dual heads.
+        weights = {name.removeprefix("model.model.").removeprefix("model."): tensor for name, tensor in weights.items()}
         model_state_dict = self.model.state_dict()
+        if has_one2one:
+            invalid_one2one = [
+                name
+                for name, tensor in model_state_dict.items()
+                if ".one2one_heads." in name and (name not in weights or tensor.shape != weights[name].shape)
+            ]
+            if invalid_one2one:
+                raise ValueError("NMS-free checkpoint has missing or incompatible one-to-one weights.")
 
         # TODO1: autoload old version weight
         # TODO2: weight transform if num_class difference
@@ -155,6 +207,8 @@ class YOLO(nn.Module):
         error_dict = {"Mismatch": set(), "Not Found": set()}
         self.weight_load_report = {"missing": [], "mismatch": []}
         for model_key, model_weight in model_state_dict.items():
+            if nms_free and not has_one2one and ".one2one_heads." in model_key:
+                continue  # Initialized from the loaded dense branch below.
             if model_key not in weights:
                 error_dict["Not Found"].add(tuple(model_key.split(".")[:-2]))
                 self.weight_load_report["missing"].append(model_key)
@@ -177,6 +231,10 @@ class YOLO(nn.Module):
                 logger.warning(f":warning: Weight {error_name} for Layer {layer_idx}: {', '.join(layer_name)}")
 
         self.model.load_state_dict(model_state_dict)
+        if nms_free and not has_one2one:
+            main_head = self.model[self.layer_index["Main"] - 1]
+            main_head.one2one_heads.load_state_dict(main_head.heads.state_dict())
+            logger.info("Initialized NMS-free one-to-one heads from loaded Main detection weights.")
 
     def require_pose_weights(self):
         """Reject incomplete/misconfigured pose inference checkpoints."""
@@ -194,7 +252,9 @@ class YOLO(nn.Module):
             raise ValueError(f"Pose inference checkpoint is incomplete: {len(missing)} missing/mismatched tensors.")
 
 
-def create_model(model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, class_num: int = 80) -> YOLO:
+def create_model(
+    model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, class_num: int = 80, qat_cfg=None
+) -> YOLO:
     """Constructs and returns a model from a Dictionary configuration file.
 
     Args:
@@ -207,8 +267,12 @@ def create_model(model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, 
         raise ValueError(
             "Pose models require an explicit checkpoint path or weight=false; pretrained pose weights are not bundled."
         )
+    if getattr(model_cfg, "pose", None) is not None and qat_cfg is not None and qat_cfg.enabled:
+        raise ValueError("Pose models currently do not support QAT training.")
     OmegaConf.set_struct(model_cfg, False)
     model = YOLO(model_cfg, class_num)
+    if model.nms_free and qat_cfg is not None and qat_cfg.enabled:
+        raise ValueError("NMS-free detection currently supports floating-point training only, not QAT.")
     if weight_path:
         if weight_path == True:
             weight_path = Path("weights") / f"{model_cfg.name}.pt"
@@ -223,4 +287,8 @@ def create_model(model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, 
             logger.info(":white_check_mark: Success load model & weight")
     else:
         logger.info(":white_check_mark: Success load model")
+    if qat_cfg is not None and qat_cfg.enabled:
+        from yolo.tools.qat import prepare_qat
+
+        prepare_qat(model, qat_cfg)
     return model

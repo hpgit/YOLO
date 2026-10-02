@@ -44,6 +44,10 @@ They sum to 1 independently; class probabilities use independent sigmoids and do
 not need to sum to 1. The output contains probabilities, not logits or decoded boxes.
 No DFL projection, stride multiplication or anchor-grid decoding is included.
 Export remains float32; it does not insert INT8 quantization.
+For trained QAT checkpoints, ``task.qdq=true`` exports learned quantization
+parameters as ONNX QuantizeLinear/DequantizeLinear pairs, retaining float32
+input/output and the same probability layout. See the repository's
+``docs/qat.md`` for training, checkpoint and backend support details.
 
 This is a breaking output-contract change from the previous YOLOv9 ONNX
 ``[B,N,4+C]`` decoded output. Update consumers when re-exporting. For postprocessing,

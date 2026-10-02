@@ -7,7 +7,6 @@ import numpy as np
 
 from yolo.utils.annotation_utils import parse_yolo_label, validate_class
 
-
 PARQUET_COLUMNS = ("image", "conf", "id_class", "box_cx", "box_cy", "box_w", "box_h")
 
 
@@ -99,7 +98,4 @@ def load_parquet_annotations(annotation_path: Path, dataset_path: Path, class_nu
             grouped[image_path] = []
         grouped[image_path].append(box)
 
-    return [
-        (path, np.asarray(grouped[path], dtype=np.float32).reshape(-1, 5))
-        for path in sorted(grouped, key=str)
-    ]
+    return [(path, np.asarray(grouped[path], dtype=np.float32).reshape(-1, 5)) for path in sorted(grouped, key=str)]

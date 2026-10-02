@@ -36,12 +36,8 @@ def test_aligned_iou_matches_pairwise_diagonal_values_and_gradients(metrics):
 
 
 def test_aligned_iou_supports_batched_and_empty_boxes_with_float32_numerics():
-    boxes1 = torch.tensor(
-        [[[0, 0, 2, 2], [1, 1, 3, 4]], [[2, 2, 5, 6], [0, 1, 0, 3]]], dtype=torch.float64
-    )
-    boxes2 = torch.tensor(
-        [[[1, 0, 3, 2], [0, 2, 4, 5]], [[1, 3, 6, 7], [0, 0, 0, 4]]], dtype=torch.float64
-    )
+    boxes1 = torch.tensor([[[0, 0, 2, 2], [1, 1, 3, 4]], [[2, 2, 5, 6], [0, 1, 0, 3]]], dtype=torch.float64)
+    boxes2 = torch.tensor([[[1, 0, 3, 2], [0, 2, 4, 5]], [[1, 3, 6, 7], [0, 0, 0, 4]]], dtype=torch.float64)
 
     pairwise = calculate_iou(boxes1, boxes2, "ciou")
     aligned = calculate_iou(boxes1, boxes2, "ciou", aligned=True)

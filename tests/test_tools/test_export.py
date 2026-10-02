@@ -153,6 +153,7 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
     cfg = export_cfg(
         f"model={version}",
         f"task.dynamic_batch={str(dynamic).lower()}",
+        f"resize_mode={'stretch' if dynamic else 'letterbox'}",
         f"task.output={tmp_path / 'model.onnx'}",
         *([f"model.anchor.reg_max={reg_max}"] if version == "v9-t" else []),
     )
@@ -165,6 +166,9 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
     assert all(len(tensor.dims) <= 4 for tensor in graph.graph.initializer)
     assert {name for node in graph.graph.node for name in node.output if name} <= {v.name for v in values}
     assert len(graph.graph.output) == 1
+    assert graph.graph.output[0].name == "output"
+    if dynamic:
+        assert graph.graph.output[0].type.tensor_type.shape.dim[0].dim_param == "batch_size"
     assert not any("NonMaxSuppression" in node.op_type for node in graph.graph.node)
     options = ort.SessionOptions()
     options.intra_op_num_threads = 2
@@ -175,16 +179,32 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
             expected = probability_reference(model(images, shortcut="Main")["Main"]).numpy()
         else:
             expected = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name)(images).numpy()
-    actual = session.run(None, {"images": images.numpy()})[0]
+    actual = session.run(["output"], {"images": images.numpy()})[0]
     assert actual.shape == expected.shape
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4)
+    # Exercise the portable consumer against an independent PyTorch decoder.
+    from yolo.tools.onnx_inference import ONNXDetector
+
+    detector = ONNXDetector(path, threads=2)
+    assert detector.resize_mode == cfg.resize_mode
+    with torch.no_grad():
+        decoded = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name)(images).numpy()
+    np.testing.assert_allclose(detector(images.numpy()), decoded, rtol=1e-4, atol=1e-4)
     if version == "v9-t":
         assert actual.shape == (images.shape[0], 42, 3 + 4 * reg_max)
         assert np.all((actual >= 0) & (actual <= 1))
         np.testing.assert_allclose(
             actual[..., : 4 * reg_max].reshape(images.shape[0], 42, 4, reg_max).sum(-1), 1, atol=1e-6
         )
-        assert len([node for node in graph.graph.node if node.op_type == "Softmax"]) == 3
+        # Each head permutes L/T/R/B bins, normalizes, then flattens before concatenating.
+        softmax_nodes = [node for node in graph.graph.node if node.op_type == "Softmax"]
+        transpose_outputs = {
+            output for node in graph.graph.node if node.op_type == "Transpose" for output in node.output
+        }
+        reshape_inputs = {node.input[0] for node in graph.graph.node if node.op_type == "Reshape"}
+        assert len(softmax_nodes) == 12
+        assert all(node.input[0] in transpose_outputs for node in softmax_nodes)
+        assert all(node.output[0] in reshape_inputs for node in softmax_nodes)
         # DFL expectation and anchor/stride decoding must not leak into this graph.
         assert not any(
             "projection" in tensor.name or "anc2vec.weight" in tensor.name for tensor in graph.graph.initializer

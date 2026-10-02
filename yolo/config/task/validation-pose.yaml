@@ -6,6 +6,7 @@ annotation_path: null
 data:
   batch_size: 32
   image_size: ${image_size}
+  resize_mode: ${resize_mode}
   cpu_num: ${cpu_num}
   shuffle: false
   pin_memory: true

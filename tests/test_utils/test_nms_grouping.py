@@ -19,17 +19,19 @@ def test_grouped_nms_matches_torchvision_with_ties(count):
 
 
 def test_large_single_group_preserves_nms_order():
-    boxes = torch.tensor([[0., 0., 10., 10.]]).repeat(1100, 1)
+    boxes = torch.tensor([[0.0, 0.0, 10.0, 10.0]]).repeat(1100, 1)
     scores = torch.ones(1100)
     groups = torch.full((1100,), 95, dtype=torch.long)
-    torch.testing.assert_close(grouped_batched_nms(boxes, scores, groups, .7),
-                               batched_nms(boxes, scores, groups, .7), rtol=0, atol=0)
+    torch.testing.assert_close(
+        grouped_batched_nms(boxes, scores, groups, 0.7), batched_nms(boxes, scores, groups, 0.7), rtol=0, atol=0
+    )
 
 
 def test_torchscript_fallback_accepts_float_threshold():
     compiled = torch.jit.script(grouped_batched_nms)
-    boxes = torch.tensor([[0., 0., 10., 10.], [1., 1., 9., 9.]])
-    scores = torch.tensor([.8, .9])
+    boxes = torch.tensor([[0.0, 0.0, 10.0, 10.0], [1.0, 1.0, 9.0, 9.0]])
+    scores = torch.tensor([0.8, 0.9])
     groups = torch.tensor([0, 0])
-    torch.testing.assert_close(compiled(boxes, scores, groups, .5),
-                               batched_nms(boxes, scores, groups, .5), rtol=0, atol=0)
+    torch.testing.assert_close(
+        compiled(boxes, scores, groups, 0.5), batched_nms(boxes, scores, groups, 0.5), rtol=0, atol=0
+    )

@@ -28,12 +28,26 @@ def test_cli_saves_frames_only_in_run_directory(tmp_path, devices, save_predict)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(project_root), env.get("PYTHONPATH")]))
     result = subprocess.run(
         [
-            sys.executable, "-m", "yolo.lazy", "task=inference", "model=v9-t",
-            "weight=false", "accelerator=cpu", f"device={devices}", "image_size=[64,64]",
-            f"task.data.source={source}", f"task.save_predict={str(save_predict).lower()}",
-            "use_wandb=false", "use_tensorboard=false", "name=output-test",
+            sys.executable,
+            "-m",
+            "yolo.lazy",
+            "task=inference",
+            "model=v9-t",
+            "weight=false",
+            "accelerator=cpu",
+            f"device={devices}",
+            "image_size=[64,64]",
+            f"task.data.source={source}",
+            f"task.save_predict={str(save_predict).lower()}",
+            "use_wandb=false",
+            "use_tensorboard=false",
+            "name=output-test",
         ],
-        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     run_dir = tmp_path / "runs" / "inference" / "output-test"

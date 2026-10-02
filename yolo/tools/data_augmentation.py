@@ -5,14 +5,17 @@ import torch
 from PIL import Image
 from torchvision.transforms import functional as TF
 
+from yolo.tools.motion_blur import MotionBlur
+from yolo.utils.resize import validate_resize_mode
+
 
 class AugmentationComposer:
     """Composes several transforms together."""
 
-    def __init__(self, transforms, image_size: int = [640, 640], base_size: int = 640):
+    def __init__(self, transforms, image_size: int = [640, 640], base_size: int = 640, resize_mode: str = "letterbox"):
         self.transforms = transforms
         # TODO: handle List of image_size [640, 640]
-        self.pad_resize = PadAndResize(image_size)
+        self.pad_resize = PadAndResize(image_size, resize_mode=resize_mode)
         self.base_size = base_size
 
         for transform in self.transforms:
@@ -54,16 +57,22 @@ class RemoveOutliers:
 
 
 class PadAndResize:
-    def __init__(self, image_size, background_color=(114, 114, 114)):
+    def __init__(self, image_size, background_color=(0, 0, 0), resize_mode="letterbox"):
         """Initialize the object with the target image size."""
         self.target_width, self.target_height = image_size
         self.background_color = background_color
+        self.resize_mode = validate_resize_mode(resize_mode)
 
     def set_size(self, image_size: List[int]):
         self.target_width, self.target_height = image_size
 
     def __call__(self, image: Image, boxes):
         img_width, img_height = image.size
+        if self.resize_mode == "stretch":
+            resized = image.resize((self.target_width, self.target_height), Image.Resampling.LANCZOS)
+            # Normalized xyxy labels are invariant under independent axis scaling.
+            reverse = torch.tensor([self.target_width / img_width, self.target_height / img_height, 0, 0, 0, 0])
+            return resized, boxes, reverse
         scale = min(self.target_width / img_width, self.target_height / img_height)
         new_width, new_height = int(img_width * scale), int(img_height * scale)
 
@@ -127,7 +136,7 @@ class Mosaic:
         more_data = self.parent.get_more_data(3)  # get 3 more images randomly
 
         data = [(image, boxes)] + more_data
-        mosaic_image = Image.new("RGB", (2 * img_sz, 2 * img_sz), (114, 114, 114))
+        mosaic_image = Image.new("RGB", (2 * img_sz, 2 * img_sz), (0, 0, 0))
         vectors = np.array([(-1, -1), (0, -1), (-1, 0), (0, 0)])
         center = np.array([img_sz, img_sz])
         all_labels = []

@@ -45,7 +45,9 @@ class YoloDataset(Dataset):
         self.base_size = mean(self.image_size)
 
         transforms = [eval(aug)(prob) for aug, prob in augment_cfg.items()]
-        self.transform = AugmentationComposer(transforms, self.image_size, self.base_size)
+        self.transform = AugmentationComposer(
+            transforms, self.image_size, self.base_size, resize_mode=getattr(data_cfg, "resize_mode", "letterbox")
+        )
         self.transform.get_more_data = self.get_more_data
         data = []
         for phase_name in phase_names:
@@ -259,7 +261,40 @@ def collate_fn(batch: List[Tuple[Tensor, Tensor]], max_boxes=100) -> Tuple[Tenso
     return batch_size, batch_images, batch_targets, batch_reverse, batch_path
 
 
-def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: str = "train"):
+class MosaicScheduleDataLoader(DataLoader):
+    """Set the recipe probability before workers start prefetching an epoch.
+
+    The epoch provider runs only in the training process. Nonpersistent workers
+    receive the updated dataset when each iterator is created, including resume.
+    Explicit constructor arguments also survive Lightning's DDP reconstruction.
+    """
+
+    def __init__(self, *args, epoch_provider, close_mosaic, mosaic_probability, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.persistent_workers:
+            raise ValueError("close_mosaic requires persistent_workers=False")
+        self.epoch_provider = epoch_provider
+        self.close_mosaic = close_mosaic
+        self.mosaic_probability = mosaic_probability
+
+    def __iter__(self):
+        epoch, max_epochs = self.epoch_provider()
+        if max_epochs is None or max_epochs <= 0:
+            raise ValueError("close_mosaic requires a positive Trainer.max_epochs")
+        closed = self.close_mosaic > 0 and epoch >= max(0, max_epochs - self.close_mosaic)
+        self.dataset.transform.hyp["mosaic"] = 0.0 if closed else self.mosaic_probability
+        return super().__iter__()
+
+
+def create_dataloader(
+    data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: str = "train", *, close_mosaic=0, epoch_provider=None
+):
+    if isinstance(close_mosaic, bool) or not isinstance(close_mosaic, int) or close_mosaic < 0:
+        raise ValueError("close_mosaic must be a nonnegative integer")
+    if close_mosaic and (task != "train" or "YOLOv9" not in data_cfg.data_augment):
+        raise ValueError("close_mosaic is only supported for the YOLOv9 training recipe")
+    if close_mosaic and epoch_provider is None:
+        raise ValueError("close_mosaic requires an epoch_provider")
     if task == "inference":
         return StreamDataLoader(data_cfg)
 
@@ -286,8 +321,19 @@ def create_dataloader(data_cfg: DataConfig, dataset_cfg: DatasetConfig, task: st
     else:
         dataset = YoloDataset(data_cfg, dataset_cfg, task)
 
-    return DataLoader(
+    loader_type = MosaicScheduleDataLoader if close_mosaic else DataLoader
+    schedule_kwargs = (
+        dict(
+            epoch_provider=epoch_provider,
+            close_mosaic=close_mosaic,
+            mosaic_probability=dataset.transform.hyp["mosaic"],
+        )
+        if close_mosaic
+        else {}
+    )
+    return loader_type(
         dataset,
+        **schedule_kwargs,
         batch_size=data_cfg.batch_size,
         shuffle=shuffle,
         num_workers=data_cfg.cpu_num,
@@ -318,7 +364,9 @@ class StreamDataLoader:
         self.running = True
         self.is_stream = isinstance(self.source, int) or str(self.source).lower().startswith("rtmp://")
 
-        self.transform = AugmentationComposer([], data_cfg.image_size)
+        self.transform = AugmentationComposer(
+            [], data_cfg.image_size, resize_mode=getattr(data_cfg, "resize_mode", "letterbox")
+        )
         self.stop_event = Event()
         self.source_done = Event()
         self.source_error = None

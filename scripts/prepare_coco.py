@@ -1,11 +1,12 @@
 """Download full official COCO 2017 with resumable parallel ranges and CRC checks."""
+
 import argparse
 import concurrent.futures
 import json
-from pathlib import Path
 import time
 import urllib.request
 import zipfile
+from pathlib import Path
 
 
 def download(name, root, workers):
@@ -41,14 +42,19 @@ def download(name, root, workers):
             except Exception:
                 if attempt == 5:
                     raise
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
 
     started = last = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        for done, result in enumerate(concurrent.futures.as_completed([pool.submit(fetch, i) for i in range(total)]), 1):
+        for done, result in enumerate(
+            concurrent.futures.as_completed([pool.submit(fetch, i) for i in range(total)]), 1
+        ):
             result.result()
             if time.monotonic() - last > 15 or done == total:
-                print(f"{name}: {done}/{total} parts ({100 * done / total:.1f}%), elapsed {time.monotonic() - started:.0f}s", flush=True)
+                print(
+                    f"{name}: {done}/{total} parts ({100 * done / total:.1f}%), elapsed {time.monotonic() - started:.0f}s",
+                    flush=True,
+                )
                 last = time.monotonic()
     temporary = target.with_suffix(".assembling")
     with temporary.open("wb") as output:
@@ -74,7 +80,9 @@ def main():
         expected = {"val2017": 5000, "train2017": 118287}.get(name)
         if expected and len(list((args.root / "images" / name).glob("*.jpg"))) == expected:
             continue
-        if not expected and all((args.root / "annotations" / f"instances_{split}2017.json").exists() for split in ("train", "val")):
+        if not expected and all(
+            (args.root / "annotations" / f"instances_{split}2017.json").exists() for split in ("train", "val")
+        ):
             continue
         download(name, args.root, args.workers)
     counts = {}
@@ -84,7 +92,11 @@ def main():
         assert len(list(images.glob("*.jpg"))) == expected
         assert len(annotation["images"]) == expected
         assert all((images / item["file_name"]).is_file() for item in annotation["images"])
-        counts[split] = {"images": expected, "annotations": len(annotation["annotations"]), "categories": len(annotation["categories"])}
+        counts[split] = {
+            "images": expected,
+            "annotations": len(annotation["annotations"]),
+            "categories": len(annotation["categories"]),
+        }
     (args.root / "verification.json").write_text(json.dumps(counts, indent=2) + "\n")
     print(json.dumps(counts, indent=2), flush=True)
 

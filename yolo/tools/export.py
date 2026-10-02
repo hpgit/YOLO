@@ -1,5 +1,6 @@
 """Export detection and pose models with one pre-NMS output and rank <= 4 tensors."""
 
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -9,7 +10,11 @@ from torch import nn
 from yolo.config.config import Config
 from yolo.model.module import Anchor2Vec, MultiheadDetection, MultiheadPose
 from yolo.model.yolo import create_model
-from yolo.utils.bounding_box_utils import Anc2Box, create_converter
+from yolo.utils.bounding_box_utils import (
+    Anc2Box,
+    _strides_from_feature_maps,
+    create_converter,
+)
 from yolo.utils.logger import logger
 
 
@@ -42,9 +47,12 @@ class ExportAnchorProbabilities(nn.Module):
     def forward(self, anchor_x):
         batch, _, height, width = anchor_x.shape
         logits = anchor_x.reshape(batch, 4, self.reg_max, height * width)
-        # [B, H*W, 4, R]: normalize each direction over its own bins.
-        probabilities = logits.permute(0, 3, 1, 2).softmax(dim=-1)
-        return logits, probabilities.flatten(2)
+        # Move each direction's bins behind the locations before normalizing them.
+        directions = anchor_x.split(self.reg_max, dim=1)
+        probabilities = torch.cat(
+            [direction.permute(0, 2, 3, 1).softmax(dim=-1).flatten(1, 2) for direction in directions], dim=-1
+        )
+        return logits, probabilities
 
 
 class ExportModel(nn.Module):
@@ -59,7 +67,8 @@ class ExportModel(nn.Module):
     sigmoid scores to the probability contract, or ``K*3`` flattened pixel
     ``(x, y, confidence)`` triples to the decoded contract.
 
-    Only Main detections are exported. No confidence filtering, top-k, NMS,
+    NMS-free models export only their one-to-one Main detections.
+    No confidence filtering, top-k, NMS,
     clipping or inverse letterbox transform is performed.
     """
 
@@ -77,8 +86,12 @@ class ExportModel(nn.Module):
             self.pose_bins = self.pose_config["pose_bins"]
             pose_range = self.pose_config["pose_range"]
             self.register_buffer("pose_bin_centers", torch.linspace(-pose_range, pose_range, self.pose_bins))
+        self.nms_free = getattr(self.model, "nms_free", False)
+        if self.pose_config is not None and self.nms_free:
+            raise ValueError("NMS-free export is not supported for pose models.")
+        active_heads = main.one2one_heads if self.nms_free else main.heads
         self.probabilities = probabilities and all(
-            isinstance(getattr(head, "anc2vec", None), Anchor2Vec) for head in main.heads
+            isinstance(getattr(head, "anc2vec", None), Anchor2Vec) for head in active_heads
         )
         self.class_num = model.num_classes
         for module in list(self.model.modules()):
@@ -187,7 +200,13 @@ def validate_onnx_tensor_ranks(model):
 
 def export_model(cfg: Config) -> Path:
     """Run an export without a Trainer, dataset download or experiment logger."""
+    from yolo.utils.resize import validate_resize_mode
+
+    resize_mode = validate_resize_mode(getattr(cfg, "resize_mode", "letterbox"))
     task = cfg.task
+    qdq = getattr(task, "qdq", False)
+    if qdq and task.format != "onnx":
+        raise ValueError("QDQ export is ONNX-only; set task.format=onnx.")
     if task.format not in ("onnx", "tflite"):
         raise ValueError("task.format must be 'onnx' or 'tflite'.")
     if not isinstance(task.batch_size, int) or isinstance(task.batch_size, bool) or task.batch_size < 1:
@@ -223,28 +242,76 @@ def export_model(cfg: Config) -> Path:
     model = create_model(deepcopy(cfg.model), class_num=cfg.dataset.class_num, weight_path=cfg.weight)
     if getattr(model, "pose_config", None) is not None and cfg.weight:
         model.require_pose_weights()
+    is_qat = hasattr(model, "qat_metadata")
+    if is_qat != qdq:
+        raise ValueError("Use task.qdq=true with a QAT checkpoint; FP export requires FP weights.")
+    if qdq:
+        from yolo.tools.qat import freeze_for_export
+
+        freeze_for_export(model)
     wrapper = ExportModel(
         model, cfg.model.anchor, list(cfg.image_size), cfg.model.name, probabilities=task.format == "onnx"
     ).eval()
+    if qdq:
+        from yolo.tools.qat import snap_export_weights
+
+        snap_export_weights(wrapper)
     width, height = cfg.image_size
     sample = torch.zeros(task.batch_size, 3, height, width)
     with torch.no_grad():
         output_shape = tuple(wrapper(sample).shape)
     output.parent.mkdir(parents=True, exist_ok=True)
     if task.format == "onnx":
-        dynamic_axes = {"images": {0: "batch_size"}, "predictions": {0: "batch_size"}} if task.dynamic_batch else None
+        dynamic_axes = {"images": {0: "batch_size"}, "output": {0: "batch_size"}} if task.dynamic_batch else None
         torch.onnx.export(
             wrapper,
             sample,
             str(output),
             input_names=["images"],
-            output_names=["predictions"],
+            output_names=["output"],
             opset_version=task.opset,
             dynamic_axes=dynamic_axes,
             dynamo=False,
         )
         exported = validate_onnx_tensor_ranks(onnx.load(str(output)))
         onnx.checker.check_model(exported)
+        # Carry the decoder contract with the artifact, including custom heads.
+        metadata = {
+            "resize_mode": resize_mode,
+            "version": 1,
+            "output_format": "dfl" if wrapper.probabilities else "xyxy",
+            "class_num": wrapper.class_num,
+            "nms_free": wrapper.nms_free,
+            "postprocess": "topk" if wrapper.nms_free else "nms",
+            "class_names": list(cfg.dataset.class_list) if len(cfg.dataset.class_list) == wrapper.class_num else [],
+        }
+        if wrapper.probabilities:
+            with torch.no_grad():
+                heads = wrapper.model(sample, shortcut="Main")["Main"]
+            metadata["strides"] = _strides_from_feature_maps((head[0] for head in heads), cfg.image_size)
+            main_head = next(layer for layer in wrapper.model.model if layer.tags == "Main" and layer.output)
+            active_heads = main_head.one2one_heads if wrapper.nms_free else main_head.heads
+            metadata["reg_max"] = active_heads[0].anc2vec.reg_max
+        if wrapper.pose_config is not None:
+            metadata["pose_config"] = dict(wrapper.pose_config)
+            metadata["output_format"] = "pose_dfl" if wrapper.probabilities else "pose_xyxy"
+        properties = {"yolo.inference": json.dumps(metadata)}
+        if qdq:
+            from yolo.tools.qat import encoding_manifest
+
+            encodings = encoding_manifest(wrapper)
+            q_nodes = [node for node in exported.graph.node if node.op_type == "QuantizeLinear"]
+            dq_nodes = [node for node in exported.graph.node if node.op_type == "DequantizeLinear"]
+            if len(q_nodes) != len(encodings) or len(dq_nodes) != len(encodings):
+                raise ValueError("Export did not preserve every QAT quantizer as a Q/DQ pair.")
+            properties.update(
+                {
+                    "yolo.qat": json.dumps(model.qat_metadata),
+                    "yolo.qat.encodings": json.dumps(encodings),
+                    "yolo.output": "[B,N,4*reg_max+C]: left,top,right,bottom bins,class probabilities",
+                },
+            )
+        onnx.helper.set_model_props(exported, properties)
         onnx.save(exported, str(output))
     else:
         edge_model = litert_torch.convert(wrapper, (sample,))

@@ -53,7 +53,7 @@ class CocoPoseEvaluator(CocoJsonEvaluator):
                 raise ValueError(f"COCO annotation {annotation.get('id')} has invalid joint visibility")
             annotation.setdefault("num_keypoints", sum(value > 0 for value in keypoints[2::3]))
 
-    def _convert_predictions(self, prediction, image_id, target_width, target_height):
+    def _convert_predictions(self, prediction, image_id, target_width, target_height, resize_mode="letterbox"):
         if not isinstance(prediction, torch.Tensor):
             raise TypeError("each prediction must be a torch.Tensor")
         expected_width = 6 + 3 * self.num_keypoints
@@ -61,7 +61,7 @@ class CocoPoseEvaluator(CocoJsonEvaluator):
             raise ValueError(f"each pose prediction tensor must have shape [N, {expected_width}]")
         # Reuse box/class validation, category mapping and exact letterbox
         # inversion. Pose coordinates follow the same integer resize geometry.
-        detections = super()._convert_predictions(prediction[:, :6], image_id, target_width, target_height)
+        detections = super()._convert_predictions(prediction[:, :6], image_id, target_width, target_height, resize_mode)
         keypoints = prediction[:, 6:].detach().to(device="cpu", dtype=torch.float64).reshape(-1, 17, 3)
         if not torch.isfinite(keypoints).all():
             raise ValueError("pose prediction contains a non-finite keypoint value")
@@ -69,6 +69,8 @@ class CocoPoseEvaluator(CocoJsonEvaluator):
         original_width, original_height = int(image["width"]), int(image["height"])
         scale = min(target_width / original_width, target_height / original_height)
         resized_width, resized_height = int(original_width * scale), int(original_height * scale)
+        if resize_mode == "stretch":
+            resized_width, resized_height = target_width, target_height
         pad_left, pad_top = (target_width - resized_width) // 2, (target_height - resized_height) // 2
         # Do not clip predictions to image boundaries: that changes OKS errors.
         keypoints = keypoints.clone()

@@ -12,7 +12,11 @@ from torchmetrics.detection import MeanAveragePrecision
 
 from yolo.tools.data_loader import create_dataloader
 from yolo.tools.solver import create_validation_metric
-from yolo.utils.parquet_utils import PARQUET_COLUMNS, load_parquet_annotations, resolve_parquet_annotation
+from yolo.utils.parquet_utils import (
+    PARQUET_COLUMNS,
+    load_parquet_annotations,
+    resolve_parquet_annotation,
+)
 
 
 def _frame(root):
@@ -21,11 +25,15 @@ def _frame(root):
         path.parent.mkdir(exist_ok=True)
         Image.new("RGB", (64, 32), (40, 80, 120)).save(path)
     # Nondefault, repeated pandas indices must not be interpreted as labels.
-    return pd.DataFrame([
-        ["pictures/b.png", .001, 1, .375, .5, .5, .5],
-        ["pictures/a.png", .99, 0, .375, .5, .5, .5],
-        ["pictures/b.png", .9, 0, .75, .25, .25, .25],
-    ], columns=PARQUET_COLUMNS, index=[4, 4, 2])
+    return pd.DataFrame(
+        [
+            ["pictures/b.png", 0.001, 1, 0.375, 0.5, 0.5, 0.5],
+            ["pictures/a.png", 0.99, 0, 0.375, 0.5, 0.5, 0.5],
+            ["pictures/b.png", 0.9, 0, 0.75, 0.25, 0.25, 0.25],
+        ],
+        columns=PARQUET_COLUMNS,
+        index=[4, 4, 2],
+    )
 
 
 def _write(root, frame, name="labels.parquet"):
@@ -36,13 +44,26 @@ def _write(root, frame, name="labels.parquet"):
 
 
 def _configs(root, source="labels.parquet", reference=False):
-    data = OmegaConf.create(dict(image_size=[64, 64], batch_size=2, cpu_num=0,
-                                 shuffle=False, pin_memory=False, data_augment={}))
+    data = OmegaConf.create(
+        dict(image_size=[64, 64], batch_size=2, cpu_num=0, shuffle=False, pin_memory=False, data_augment={})
+    )
     if reference:
-        data.data_augment = {"YOLOv9": dict(mosaic=0., mixup=0., translate=0., scale=0.,
-                                           fliplr=0., hsv_h=0., hsv_s=0., hsv_v=0., albumentations=False)}
-    dataset = OmegaConf.create(dict(path=str(root), train=source, validation=source, class_num=2,
-                                    class_list=["first", "second"]))
+        data.data_augment = {
+            "YOLOv9": dict(
+                mosaic=0.0,
+                mixup=0.0,
+                translate=0.0,
+                scale=0.0,
+                fliplr=0.0,
+                hsv_h=0.0,
+                hsv_s=0.0,
+                hsv_v=0.0,
+                albumentations=False,
+            )
+        }
+    dataset = OmegaConf.create(
+        dict(path=str(root), train=source, validation=source, class_num=2, class_list=["first", "second"])
+    )
     return data, dataset
 
 
@@ -59,13 +80,13 @@ def test_grouping_coordinates_paths_and_confidence(tmp_path, reference, source):
     assert len(loader.dataset) == 2
     batch = next(iter(loader))
     assert list(batch[4]) == [tmp_path / "pictures/a.png", tmp_path / "pictures/b.png"]
-    torch.testing.assert_close(batch[2][0, 0], torch.tensor([0., 8., 24., 40., 40.]))
+    torch.testing.assert_close(batch[2][0, 0], torch.tensor([0.0, 8.0, 24.0, 40.0, 40.0]))
     assert batch[2][0, 1, 0] == -1  # Padding only, not a second annotation.
-    torch.testing.assert_close(batch[2][1], torch.tensor([[1., 8., 24., 40., 40.], [0., 40., 20., 56., 28.]]))
+    torch.testing.assert_close(batch[2][1], torch.tensor([[1.0, 8.0, 24.0, 40.0, 40.0], [0.0, 40.0, 20.0, 56.0, 28.0]]))
     if reference:
         assert all(segment.shape == (0, 2) for segments in loader.dataset.segments for segment in segments)
     # Confidence neither removes the low-confidence row nor changes targets.
-    frame["conf"] = [float("nan"), 0., .1]
+    frame["conf"] = [float("nan"), 0.0, 0.1]
     _write(tmp_path, frame, filename)
     second = next(iter(create_dataloader(data, dataset)))
     torch.testing.assert_close(second[2], batch[2])
@@ -74,22 +95,25 @@ def test_grouping_coordinates_paths_and_confidence(tmp_path, reference, source):
     torch.testing.assert_close(validation[2], batch[2])
 
 
-@pytest.mark.parametrize("column,value,message", [
-    ("image", None, "image must"),
-    ("image", "", "image must"),
-    ("image", "missing.png", "does not exist"),
-    ("id_class", -1, "non-negative integer"),
-    ("id_class", 0.5, "non-negative integer"),
-    ("id_class", 0.999999999, "non-negative integer"),
-    ("id_class", float("nan"), "non-negative integer"),
-    ("id_class", 2, "class_num"),
-    ("box_cx", float("nan"), "finite"),
-    ("box_cy", float("inf"), "finite"),
-    ("box_cx", 1.1, "normalized"),
-    ("box_w", -.1, "normalized"),
-    ("box_w", 0., "positive"),
-    ("box_h", 0., "positive"),
-])
+@pytest.mark.parametrize(
+    "column,value,message",
+    [
+        ("image", None, "image must"),
+        ("image", "", "image must"),
+        ("image", "missing.png", "does not exist"),
+        ("id_class", -1, "non-negative integer"),
+        ("id_class", 0.5, "non-negative integer"),
+        ("id_class", 0.999999999, "non-negative integer"),
+        ("id_class", float("nan"), "non-negative integer"),
+        ("id_class", 2, "class_num"),
+        ("box_cx", float("nan"), "finite"),
+        ("box_cy", float("inf"), "finite"),
+        ("box_cx", 1.1, "normalized"),
+        ("box_w", -0.1, "normalized"),
+        ("box_w", 0.0, "positive"),
+        ("box_h", 0.0, "positive"),
+    ],
+)
 @pytest.mark.parametrize("reference", [False, True])
 def test_invalid_rows_report_file_and_row(tmp_path, reference, column, value, message):
     frame = _frame(tmp_path).reset_index(drop=True)
@@ -127,15 +151,18 @@ def test_mixed_multiple_inputs_and_fresh_annotations(tmp_path, reference):
     (tmp_path / "legacy.txt").write_text("pictures/a.png\n")
     data, dataset = _configs(tmp_path, ["second.parquet", "first.parquet", "legacy"], reference)
     loader = create_dataloader(data, dataset)
-    assert list(loader.dataset.img_paths) == [tmp_path / "pictures/b.png", tmp_path / "pictures/a.png",
-                                            tmp_path / "pictures/a.png"]
+    assert list(loader.dataset.img_paths) == [
+        tmp_path / "pictures/b.png",
+        tmp_path / "pictures/a.png",
+        tmp_path / "pictures/a.png",
+    ]
     # Replacement annotations and stale legacy caches must not hide new boxes.
     changed = frame[frame.image == "pictures/a.png"].copy()
-    changed["box_cx"] = .5
+    changed["box_cx"] = 0.5
     _write(tmp_path, changed, "first.parquet")
     torch.save({"metadata": {"version": 2}, "data": []}, tmp_path / "first.parquet.pache")
     reread = create_dataloader(data, dataset).dataset
-    np.testing.assert_allclose(reread.bboxes[1][0], [0., .25, .25, .75, .75])
+    np.testing.assert_allclose(reread.bboxes[1][0], [0.0, 0.25, 0.25, 0.75, 0.75])
 
 
 def test_discovery_preserves_existing_precedence(tmp_path):
@@ -166,7 +193,7 @@ def test_dynamic_shape_sorts_parquet_samples(tmp_path):
     data, dataset = _configs(tmp_path)
     data.dynamic_shape = True
     loader = create_dataloader(data, dataset)
-    assert list(loader.dataset.ratios) == [2., .5]
+    assert list(loader.dataset.ratios) == [2.0, 0.5]
     assert next(iter(loader))[1].shape[0] == 2
 
 
@@ -178,7 +205,7 @@ def test_image_paths_follow_coco_json_convention(tmp_path, reference, image_entr
     image.parent.mkdir(parents=True)
     Image.new("RGB", (64, 32)).save(image)
     entry = str(image) if image_entry == "absolute" else image_entry
-    frame = pd.DataFrame([[entry, .01, 1, .375, .5, .5, .5]], columns=PARQUET_COLUMNS)
+    frame = pd.DataFrame([[entry, 0.01, 1, 0.375, 0.5, 0.5, 0.5]], columns=PARQUET_COLUMNS)
     _write(tmp_path, frame, "annotations/instances_sample.parquet")
     data, dataset = _configs(tmp_path, source, reference)
     loaded = create_dataloader(data, dataset).dataset
@@ -186,7 +213,7 @@ def test_image_paths_follow_coco_json_convention(tmp_path, reference, image_entr
 
 
 def test_split_image_path_takes_precedence_over_root_fallbacks(tmp_path):
-    frame = pd.DataFrame([["a.png", .9, 0, .5, .5, .5, .5]], columns=PARQUET_COLUMNS)
+    frame = pd.DataFrame([["a.png", 0.9, 0, 0.5, 0.5, 0.5, 0.5]], columns=PARQUET_COLUMNS)
     for relative in ["images/sample/a.png", "images/a.png", "a.png"]:
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,14 +262,19 @@ def test_explicit_coco_gt_with_parquet_input_uses_correct_image_root(tmp_path):
     frame = _frame(tmp_path)
     path = _write(tmp_path, frame, "annotations/instances_sample.parquet")
     annotation = tmp_path / "authoritative.json"
-    annotation.write_text(json.dumps(dict(
-        images=[dict(id=1, file_name="a.png", width=64, height=32)],
-        categories=[dict(id=1, name="first"), dict(id=18, name="second")],
-        annotations=[],
-    )))
+    annotation.write_text(
+        json.dumps(
+            dict(
+                images=[dict(id=1, file_name="a.png", width=64, height=32)],
+                categories=[dict(id=1, name="first"), dict(id=18, name="second")],
+                annotations=[],
+            )
+        )
+    )
     _, dataset = _configs(tmp_path, str(path))
-    cfg = OmegaConf.create(dict(task="validation", evaluator="coco", annotation_path=str(annotation),
-                                data={"data_augment": {}}))
+    cfg = OmegaConf.create(
+        dict(task="validation", evaluator="coco", annotation_path=str(annotation), data={"data_augment": {}})
+    )
     metric = create_validation_metric(cfg, dataset)
     assert isinstance(metric, CocoJsonEvaluator)
     assert metric.image_root == tmp_path / "images/sample"

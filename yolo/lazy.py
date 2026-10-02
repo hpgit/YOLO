@@ -18,6 +18,9 @@ from yolo.utils.logging_utils import set_seed, setup
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
 def main(cfg: Config):
+    if isinstance(getattr(cfg, "image_size", None), int):
+        cfg.image_size = [cfg.image_size, cfg.image_size]
+
     # Seed before constructing models, datasets, callbacks, or the Trainer.
     set_seed(cfg.lucky_number)
     if cfg.task.task == "export":
@@ -25,16 +28,28 @@ def main(cfg: Config):
 
         return export_model(cfg)
 
+    if cfg.task.task == "inference" and (
+        str(getattr(cfg, "weight", "")).lower().endswith(".onnx") or getattr(cfg.task, "fast_inference", None) == "onnx"
+    ):
+        from yolo.tools.onnx_runner import run_onnx_inference
+
+        return run_onnx_inference(cfg)
+
     overrides = HydraConfig.get().overrides.task if HydraConfig.initialized() else []
     weight_explicit = any(item.lstrip("+").split("=", 1)[0] == "weight" for item in overrides)
     checkpoint_path = resolve_training_checkpoint(cfg, weight_explicit=weight_explicit)
+    from yolo.tools.qat import configure_qat_run
+
+    checkpoint_path = configure_qat_run(cfg, checkpoint_path)
     callbacks, loggers, save_path = setup(cfg, resume=checkpoint_path is not None)
 
     trainer = Trainer(
         accelerator=getattr(cfg, "accelerator", "auto"),
         devices=cfg.device,
         max_epochs=getattr(cfg.task, "epoch", None),
-        precision=getattr(cfg, "precision", "16-mixed"),
+        precision=(
+            "32-true" if getattr(getattr(cfg, "qat", None), "enabled", False) else getattr(cfg, "precision", "16-mixed")
+        ),
         callbacks=callbacks,
         sync_batchnorm=True,
         logger=loggers,

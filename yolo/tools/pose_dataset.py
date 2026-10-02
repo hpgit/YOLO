@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import functional as TF
 
 from yolo.utils.logger import logger
+from yolo.utils.resize import validate_resize_mode
 
 # COCO's left/right pairs, using zero-based indices in the standard 17-point
 # order. Nose (0) is intentionally unchanged.
@@ -71,7 +72,7 @@ class CocoPoseDataset(Dataset):
     """COCO person pose samples as ``[cls, xyxy, (x, y, v) * K]`` tensors.
 
     Coordinates returned by :meth:`__getitem__` are absolute pixels in the
-    letterboxed image. People with no labeled keypoints remain as detection
+    resized image. People with no labeled keypoints remain as detection
     targets with zeroed keypoints. Crowd annotations are excluded from training.
     """
 
@@ -79,13 +80,14 @@ class CocoPoseDataset(Dataset):
         if task not in {"train", "validation"}:
             raise ValueError(f"Pose dataset task must be 'train' or 'validation', got {task!r}")
         if bool(_config_value(data_cfg, "dynamic_shape", False)):
-            raise ValueError("Pose data does not support dynamic_shape; use a fixed letterbox size")
+            raise ValueError("Pose data does not support dynamic_shape; use a fixed image size")
 
         self.task = task
         self.training = task == "train"
         self.image_size = tuple(int(value) for value in _config_value(data_cfg, "image_size"))
         if len(self.image_size) != 2 or min(self.image_size) <= 0:
             raise ValueError("Pose image_size must contain positive [width, height]")
+        self.resize_mode = validate_resize_mode(_config_value(data_cfg, "resize_mode", "letterbox"))
         self.fliplr = _pose_flip_probability(data_cfg, task)
         self.num_keypoints = int(_config_value(dataset_cfg, "num_keypoints", 17))
         if self.num_keypoints != 17:
@@ -301,10 +303,14 @@ class CocoPoseDataset(Dataset):
         width, height = image.size
         scale = min(target_width / width, target_height / height)
         resized_width, resized_height = int(width * scale), int(height * scale)
+        if self.resize_mode == "stretch":
+            resized_width, resized_height = target_width, target_height
+        if min(resized_width, resized_height) <= 0:
+            raise ValueError("Pose image_size is too small for the source image")
         resized = image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
         pad_left = (target_width - resized_width) // 2
         pad_top = (target_height - resized_height) // 2
-        output = Image.new("RGB", (target_width, target_height), (114, 114, 114))
+        output = Image.new("RGB", (target_width, target_height), (0, 0, 0))
         output.paste(resized, (pad_left, pad_top))
 
         if targets.numel():

@@ -29,6 +29,8 @@ class ModelConfig:
     name: Optional[str]
     anchor: AnchorConfig
     model: Dict[str, BlockConfig]
+    activation: Optional[str] = None
+    nms_free: bool = False
 
 
 @dataclass
@@ -63,6 +65,7 @@ class DataConfig:
     source: Optional[Union[str, int]]
     dynamic_shape: Optional[bool]
     equivalent_batch_size: Optional[int] = 64
+    resize_mode: str = "letterbox"
 
 
 @dataclass
@@ -90,6 +93,7 @@ class LossConfig:
     objective: Dict[str, int]
     aux: Union[bool, float]
     matcher: MatcherConfig
+    one2one: float = 1.0
 
 
 @dataclass
@@ -119,6 +123,7 @@ class InferenceConfig:
     data: DataConfig
     fast_inference: Optional[None]
     save_predict: bool
+    onnx: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -140,8 +145,17 @@ class TrainConfig:
     scheduler: SchedulerConfig
     ema: EMAConfig
     validation: ValidationConfig
+    close_mosaic: int = 0
     gradient_clip_val: float = 10.0
     gradient_clip_algorithm: str = "norm"
+
+
+@dataclass
+class QATConfig:
+    enabled: bool = False
+    fake_quant_start_epoch: int = 1
+    observer_freeze_epoch: int = 3
+    averaging_constant: float = 0.01
 
 
 @dataclass
@@ -152,6 +166,7 @@ class ExportConfig:
     dynamic_batch: bool
     opset: int
     output: Optional[str]
+    qdq: bool = False
 
 
 @dataclass
@@ -159,6 +174,7 @@ class Config:
     task: Union[TrainConfig, InferenceConfig, ValidationConfig, ExportConfig]
     dataset: DatasetConfig
     model: ModelConfig
+    qat: QATConfig
     name: str
 
     accelerator: Optional[str]
@@ -175,6 +191,7 @@ class Config:
     use_tensorboard: bool
 
     weight: Optional[str]
+    resize_mode: str = "letterbox"
 
 
 @dataclass

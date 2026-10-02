@@ -62,18 +62,21 @@ def pose_nms(classes, boxes, keypoints, nms_cfg):
 
 
 def reverse_pose_coordinates(boxes, keypoints, reverse):
-    """Undo letterbox without modifying confidence or the source tensors.
+    """Undo letterbox or stretch without modifying confidence or the source tensors.
 
     Accept legacy [gain,pad_x,pad_y,pad_x,pad_y] or exact pose transform
-    [gain_x,gain_y,pad_x,pad_y].
+    [gain_x,gain_y,pad_x,pad_y], or main stretch metadata
+    [gain_x,gain_y,pad_x,pad_y,pad_x,pad_y].
     """
     reverse = reverse.to(device=boxes.device, dtype=boxes.dtype)
     if reverse.shape[-1] == 4:
         gains, pads = reverse[:, :2], reverse[:, 2:]
+    elif reverse.shape[-1] == 6:
+        gains, pads = reverse[:, :2], reverse[:, 2:4]
     elif reverse.shape[-1] == 5:
         gains, pads = reverse[:, :1].expand(-1, 2), reverse[:, 1:3]
     else:
-        raise ValueError("Pose inverse transform requires four or five values per image.")
+        raise ValueError("Pose inverse transform requires four, five, or six values per image.")
     boxes = (boxes - pads.repeat(1, 2)[:, None]) / gains.repeat(1, 2)[:, None]
     xy = (keypoints[..., :2] - pads[:, None, None]) / gains[:, None, None]
     return boxes, torch.cat((xy, keypoints[..., 2:]), -1)

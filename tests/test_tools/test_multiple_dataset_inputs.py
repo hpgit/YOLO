@@ -1,4 +1,5 @@
 """Multiple configured splits must reach training and aggregate validation."""
+
 import json
 
 import numpy as np
@@ -15,13 +16,26 @@ from yolo.utils.coco_eval import CocoJsonEvaluator
 
 
 def _configs(root, reference=False):
-    data = OmegaConf.create(dict(image_size=[64, 64], batch_size=2, cpu_num=0,
-                                 shuffle=False, pin_memory=False, data_augment={}))
+    data = OmegaConf.create(
+        dict(image_size=[64, 64], batch_size=2, cpu_num=0, shuffle=False, pin_memory=False, data_augment={})
+    )
     if reference:
-        data.data_augment = {"YOLOv9": dict(mosaic=0., mixup=0., translate=0., scale=0.,
-                                           fliplr=0., hsv_h=0., hsv_s=0., hsv_v=0., albumentations=False)}
-    dataset = OmegaConf.create(dict(path=str(root), train=["first", "second"],
-                                    validation=["first", "second"], class_num=1))
+        data.data_augment = {
+            "YOLOv9": dict(
+                mosaic=0.0,
+                mixup=0.0,
+                translate=0.0,
+                scale=0.0,
+                fliplr=0.0,
+                hsv_h=0.0,
+                hsv_s=0.0,
+                hsv_v=0.0,
+                albumentations=False,
+            )
+        }
+    dataset = OmegaConf.create(
+        dict(path=str(root), train=["first", "second"], validation=["first", "second"], class_num=1)
+    )
     return data, dataset
 
 
@@ -32,12 +46,17 @@ def _write_split(root, split, kind="txt", size=(64, 32)):
     if kind == "json":
         annotation = root / "annotations" / f"instances_{split}.json"
         annotation.parent.mkdir(exist_ok=True)
-        annotation.write_text(json.dumps(dict(
-            images=[dict(id=1, file_name="same.png", width=size[0], height=size[1])],
-            categories=[dict(id=7, name="object")],
-            annotations=[dict(id=1, image_id=1, category_id=7,
-                              bbox=[size[0] / 4, size[1] / 4, size[0] / 2, size[1] / 2])],
-        )))
+        annotation.write_text(
+            json.dumps(
+                dict(
+                    images=[dict(id=1, file_name="same.png", width=size[0], height=size[1])],
+                    categories=[dict(id=7, name="object")],
+                    annotations=[
+                        dict(id=1, image_id=1, category_id=7, bbox=[size[0] / 4, size[1] / 4, size[0] / 2, size[1] / 2])
+                    ],
+                )
+            )
+        )
     else:
         label = root / "labels" / split / "same.txt"
         label.parent.mkdir(parents=True)
@@ -56,7 +75,7 @@ def test_multiple_inputs_reach_train_and_validation(tmp_path, kinds, reference):
     batch = next(iter(train))
     assert list(batch[4]) == paths
     assert batch[1].shape == (2, 3, 64, 64)
-    torch.testing.assert_close(batch[2], torch.tensor([[[0., 16., 24., 48., 40.]]] * 2))
+    torch.testing.assert_close(batch[2], torch.tensor([[[0.0, 16.0, 24.0, 48.0, 40.0]]] * 2))
     if reference:
         assert all(len(segments[0]) == 4 for segments in train.dataset.segments if len(segments[0]))
         # Augmentation sampling sees the combined dataset, including split 2.
@@ -72,7 +91,7 @@ def test_multiple_inputs_reach_train_and_validation(tmp_path, kinds, reference):
         metric.update(predictions, batch[4], [64, 64])
     else:
         metric.update([to_metrics_format(p) for p in predictions], [to_metrics_format(t) for t in batch[2]])
-    assert float(metric.compute()["map"]) == pytest.approx(1.)
+    assert float(metric.compute()["map"]) == pytest.approx(1.0)
 
 
 def test_dynamic_shape_sorts_combined_data_and_reuses_each_cache(tmp_path, monkeypatch):
@@ -81,7 +100,7 @@ def test_dynamic_shape_sorts_combined_data_and_reuses_each_cache(tmp_path, monke
     data, dataset = _configs(tmp_path)
     data.dynamic_shape = True
     first = create_dataloader(data, dataset).dataset
-    assert list(first.ratios) == [2., .5]
+    assert list(first.ratios) == [2.0, 0.5]
     batch = next(iter(create_dataloader(data, dataset)))
     assert batch[1].shape[0] == 2
     monkeypatch.setattr(YoloDataset, "filter_data", lambda *args: pytest.fail("cache was not reused"))
@@ -123,8 +142,7 @@ def test_multiple_coco_inputs_reject_inconsistent_class_mapping(tmp_path):
 
 def test_auto_download_selects_all_inputs_once(tmp_path, monkeypatch):
     _, dataset = _configs(tmp_path)
-    dataset.auto_download = dict(images=dict(base_url="https://example.invalid/",
-                                             first={}, second={}, unused={}))
+    dataset.auto_download = dict(images=dict(base_url="https://example.invalid/", first={}, second={}, unused={}))
     downloaded = []
     monkeypatch.setattr("yolo.tools.dataset_preparation.download_file", lambda url, path: downloaded.append(path.name))
     monkeypatch.setattr("yolo.tools.dataset_preparation.unzip_file", lambda *args: None)
@@ -145,19 +163,41 @@ def test_multiple_inputs_real_training_and_standalone_validation(tmp_path, refer
     for split in ("first", "second"):
         _write_split(tmp_path, split, "json")
     with initialize_config_dir(config_dir=str(Path(__file__).resolve().parents[2] / "yolo/config"), version_base=None):
-        cfg = compose(config_name="config", overrides=[
-            "task=train", "model=v9-t", "dataset=mock", "weight=false", "dataset.auto_download=null",
-            f"dataset.path={tmp_path}", "dataset.train=[first,second]", "dataset.validation=[first,second]",
-            "dataset.class_num=1", "image_size=[64,64]", "cpu_num=0", "task.data.batch_size=2",
-            "task.validation.data.batch_size=2", "task.epoch=1", "use_wandb=false",
-        ])
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "task=train",
+                "model=v9-t",
+                "dataset=mock",
+                "weight=false",
+                "dataset.auto_download=null",
+                f"dataset.path={tmp_path}",
+                "dataset.train=[first,second]",
+                "dataset.validation=[first,second]",
+                "dataset.class_num=1",
+                "image_size=[64,64]",
+                "cpu_num=0",
+                "task.data.batch_size=2",
+                "task.validation.data.batch_size=2",
+                "task.epoch=1",
+                "use_wandb=false",
+            ],
+        )
     if not reference:
         cfg.task.data.data_augment = {}
     model = TrainModel(cfg)
     before = {key: value.detach().clone() for key, value in model.model.named_parameters()}
-    trainer = Trainer(accelerator="cpu", devices=1, precision="32-true", max_epochs=1,
-                      logger=False, enable_checkpointing=False, enable_progress_bar=False,
-                      enable_model_summary=False, default_root_dir=tmp_path)
+    trainer = Trainer(
+        accelerator="cpu",
+        devices=1,
+        precision="32-true",
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        default_root_dir=tmp_path,
+    )
     trainer.fit(model)
     assert trainer.global_step == 1
     assert any(not torch.equal(before[key], value) for key, value in model.model.named_parameters())

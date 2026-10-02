@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import torch
 
+from yolo.tools.motion_blur import MotionBlur
+from yolo.utils.resize import validate_resize_mode
 
 Sample = Tuple[np.ndarray, np.ndarray, Sequence[np.ndarray]]
 SampleGetter = Callable[[int], object]
@@ -34,6 +36,10 @@ _DEFAULT_HYP = {
     "mixup": 0.15,
     "copy_paste": 0.3,
     "albumentations": True,
+    # Opt in through train.yaml; direct callers retain upstream parity.
+    "motion_blur": 0.0,
+    "motion_blur_kernel_size": 3,
+    "motion_blur_strength": 0.5,
 }
 
 
@@ -164,18 +170,11 @@ def _resample_segment(segment: np.ndarray, count: int = 1000) -> np.ndarray:
 
 
 def _segment_box(segment: np.ndarray, width: int, height: int) -> np.ndarray:
-    inside = (
-        (segment[:, 0] >= 0)
-        & (segment[:, 1] >= 0)
-        & (segment[:, 0] <= width)
-        & (segment[:, 1] <= height)
-    )
+    inside = (segment[:, 0] >= 0) & (segment[:, 1] >= 0) & (segment[:, 0] <= width) & (segment[:, 1] <= height)
     if not inside.any():
         return np.zeros(4, dtype=np.float64)
     points = segment[inside]
-    return np.array(
-        [points[:, 0].min(), points[:, 1].min(), points[:, 0].max(), points[:, 1].max()]
-    )
+    return np.array([points[:, 0].min(), points[:, 1].min(), points[:, 0].max(), points[:, 1].max()])
 
 
 def _box_candidates(
@@ -193,12 +192,7 @@ def _box_candidates(
         after_height / (after_width + 1e-16),
     )
     retained_area = (after_width * after_height) / (before_width * before_height + 1e-16)
-    return (
-        (after_width > 2)
-        & (after_height > 2)
-        & (retained_area > area_threshold)
-        & (aspect < 100)
-    )
+    return (after_width > 2) & (after_height > 2) & (retained_area > area_threshold) & (aspect < 100)
 
 
 def _random_perspective(
@@ -245,14 +239,14 @@ def _random_perspective(
             image,
             matrix,
             dsize=(output_width, output_height),
-            borderValue=(114, 114, 114),
+            borderValue=(0, 0, 0),
         )
     else:
         image = cv2.warpAffine(
             image,
             matrix[:2],
             dsize=(output_width, output_height),
-            borderValue=(114, 114, 114),
+            borderValue=(0, 0, 0),
         )
 
     count = len(labels)
@@ -299,9 +293,7 @@ def _random_perspective(
 def _augment_hsv(image: np.ndarray, hue_gain: float, saturation_gain: float, value_gain: float) -> None:
     if not (hue_gain or saturation_gain or value_gain):
         return
-    gains = np.random.uniform(-1, 1, 3) * np.array(
-        [hue_gain, saturation_gain, value_gain]
-    ) + 1
+    gains = np.random.uniform(-1, 1, 3) * np.array([hue_gain, saturation_gain, value_gain]) + 1
     hue, saturation, value = cv2.split(cv2.cvtColor(image, cv2.COLOR_RGB2HSV))
     values = np.arange(256, dtype=gains.dtype)
     hue_lut = ((values * gains[0]) % 180).astype(np.uint8)
@@ -322,11 +314,11 @@ class YOLOv9Augmentation:
 
     ``get_sample`` is required when mosaic is selected.  Every callback call
     returns ``(RGB image, normalized xyxy boxes, aligned normalized segments)``.
-    Mosaic remains eligible for the whole training run; this class deliberately
-    has no late-epoch mosaic shutdown state.
+    The training loader may set hyp["mosaic"] to zero for the final epochs
+    before starting worker prefetch; this transform does not track epochs.
     """
 
-    def __init__(self, image_size: object = 640, **hyp: object) -> None:
+    def __init__(self, image_size: object = 640, resize_mode: str = "letterbox", **hyp: object) -> None:
         if isinstance(image_size, int):
             size = image_size
         elif isinstance(image_size, (tuple, list)) and len(image_size) == 2:
@@ -338,6 +330,7 @@ class YOLOv9Augmentation:
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or size % 2:
             raise ValueError("image_size must be a positive even integer")
         self.image_size = size
+        self.resize_mode = validate_resize_mode(resize_mode)
 
         settings = dict(_DEFAULT_HYP)
         settings.update(hyp)
@@ -346,9 +339,12 @@ class YOLOv9Augmentation:
         for name in ("hsv_h", "hsv_s", "hsv_v", "degrees", "translate", "scale", "shear", "perspective"):
             settings[name] = float(settings[name])
         self.hyp = settings
-        self._albumentations = self._make_albumentations(
-            bool(settings["albumentations"]), self.image_size
+        self.motion_blur = MotionBlur(
+            prob=settings["motion_blur"],
+            kernel_size=settings["motion_blur_kernel_size"],
+            strength=settings["motion_blur_strength"],
         )
+        self._albumentations = self._make_albumentations(bool(settings["albumentations"]), self.image_size)
 
     @staticmethod
     def _make_albumentations(enabled: bool, image_size: int):
@@ -357,13 +353,9 @@ class YOLOv9Augmentation:
         try:
             import albumentations as A
         except ImportError as error:
-            raise ImportError(
-                "albumentations=True requires the optional dependency albumentations==1.3.1"
-            ) from error
+            raise ImportError("albumentations=True requires the optional dependency albumentations==1.3.1") from error
         if A.__version__ != "1.3.1":
-            raise RuntimeError(
-                "YOLOv9 Albumentations parity requires version 1.3.1, found {}".format(A.__version__)
-            )
+            raise RuntimeError("YOLOv9 Albumentations parity requires version 1.3.1, found {}".format(A.__version__))
         transforms = [
             A.RandomResizedCrop(
                 height=image_size,
@@ -393,6 +385,11 @@ class YOLOv9Augmentation:
         segments = _as_segments(sample[2], len(boxes))
         return image, boxes, segments
 
+    def _resize_sample(self, image):
+        if self.resize_mode == "stretch":
+            return cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
+        return _resize_longest(image, self.image_size)
+
     def _mosaic(
         self,
         first: Sample,
@@ -408,11 +405,11 @@ class YOLOv9Augmentation:
         samples.extend(self._prepare_sample(sample) for sample in extra_samples)
         random.shuffle(samples)
 
-        canvas = np.full((size * 2, size * 2, 3), 114, dtype=np.uint8)
+        canvas = np.full((size * 2, size * 2, 3), 0, dtype=np.uint8)
         all_labels = []
         all_segments = []
         for position, (image, labels, segments) in enumerate(samples):
-            image = _resize_longest(image, size)
+            image = self._resize_sample(image)
             height, width = image.shape[:2]
             if position == 0:
                 dst = (max(center_x - width, 0), max(center_y - height, 0), center_x, center_y)
@@ -438,11 +435,11 @@ class YOLOv9Augmentation:
                 pixel_labels[:, [2, 4]] = labels[:, [2, 4]] * height + offset_y
                 all_labels.append(pixel_labels)
                 all_segments.extend(
-                    np.column_stack(
-                        (segment[:, 0] * width + offset_x, segment[:, 1] * height + offset_y)
+                    (
+                        np.column_stack((segment[:, 0] * width + offset_x, segment[:, 1] * height + offset_y))
+                        if len(segment)
+                        else np.zeros((0, 2), dtype=np.float32)
                     )
-                    if len(segment)
-                    else np.zeros((0, 2), dtype=np.float32)
                     for segment in segments
                 )
 
@@ -454,9 +451,7 @@ class YOLOv9Augmentation:
         for segment in all_segments:
             np.clip(segment, 0, 2 * size, out=segment)
 
-        canvas, labels, all_segments = _copy_paste(
-            canvas, labels, all_segments, self.hyp["copy_paste"]
-        )
+        canvas, labels, all_segments = _copy_paste(canvas, labels, all_segments, self.hyp["copy_paste"])
         return _random_perspective(
             canvas,
             labels,
@@ -471,15 +466,13 @@ class YOLOv9Augmentation:
 
     def _single(self, sample: Sample) -> Tuple[np.ndarray, np.ndarray]:
         image, labels, _ = self._prepare_sample(sample)
-        image = _resize_longest(image, self.image_size)
+        image = self._resize_sample(image)
         height, width = image.shape[:2]
         pad_x = (self.image_size - width) / 2
         pad_y = (self.image_size - height) / 2
         left, right = int(round(pad_x - 0.1)), int(round(pad_x + 0.1))
         top, bottom = int(round(pad_y - 0.1)), int(round(pad_y + 0.1))
-        image = cv2.copyMakeBorder(
-            image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114)
-        )
+        image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(0, 0, 0))
         if len(labels):
             labels[:, [1, 3]] = labels[:, [1, 3]] * width + pad_x
             labels[:, [2, 4]] = labels[:, [2, 4]] * height + pad_y
@@ -494,9 +487,7 @@ class YOLOv9Augmentation:
             self.hyp["perspective"],
         )
 
-    def _apply_albumentations(
-        self, image: np.ndarray, labels: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def _apply_albumentations(self, image: np.ndarray, labels: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         if self._albumentations is None:
             return image, labels
         # The reference loader stores BGR images and gives normalized xywh
@@ -524,9 +515,9 @@ class YOLOv9Augmentation:
             boxes_xyxy[:, 1] = converted[:, 1] - converted[:, 3] / 2
             boxes_xyxy[:, 2] = converted[:, 0] + converted[:, 2] / 2
             boxes_xyxy[:, 3] = converted[:, 1] + converted[:, 3] / 2
-            labels = np.column_stack(
-                (np.asarray(transformed["class_labels"], dtype=np.float32), boxes_xyxy)
-            ).astype(np.float32, copy=False)
+            labels = np.column_stack((np.asarray(transformed["class_labels"], dtype=np.float32), boxes_xyxy)).astype(
+                np.float32, copy=False
+            )
         else:
             labels = np.zeros((0, 5), dtype=np.float32)
         return image, labels
@@ -579,9 +570,8 @@ class YOLOv9Augmentation:
             if len(labels):
                 labels[:, [1, 3]] = 1 - labels[:, [3, 1]]
 
-        image_tensor = torch.from_numpy(
-            np.ascontiguousarray(image.transpose(2, 0, 1))
-        ).to(torch.float32).div_(255.0)
+        image, labels = self.motion_blur(image, labels)
+        image_tensor = torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))).to(torch.float32).div_(255.0)
         boxes_tensor = torch.from_numpy(np.ascontiguousarray(labels, dtype=np.float32))
         reverse = torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0], dtype=torch.float32)
         return image_tensor, boxes_tensor, reverse

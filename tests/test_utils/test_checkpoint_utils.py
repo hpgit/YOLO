@@ -10,18 +10,32 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from yolo import lazy
 from yolo.model.yolo import YOLO
-from yolo.utils.checkpoint_utils import YOLOCheckpoint, latest_checkpoint, resolve_training_checkpoint
 from yolo.utils import logging_utils
+from yolo.utils.checkpoint_utils import (
+    YOLOCheckpoint,
+    latest_checkpoint,
+    resolve_training_checkpoint,
+)
 from yolo.utils.logging_utils import setup, validate_log_directory
 from yolo.utils.model_utils import EMA
 
 
 def config(tmp_path, **kwargs):
-    return OmegaConf.create({
-        "task": {"task": "train", "data": {}}, "name": "run", "weight": True,
-        "out_path": str(tmp_path), "exist_ok": False, "quiet": True, "lucky_number": 10,
-        "use_wandb": False, "use_tensorboard": False, "device": 1, **kwargs,
-    })
+    return OmegaConf.create(
+        {
+            "task": {"task": "train", "data": {}},
+            "name": "run",
+            "weight": True,
+            "out_path": str(tmp_path),
+            "exist_ok": False,
+            "quiet": True,
+            "lucky_number": 10,
+            "use_wandb": False,
+            "use_tensorboard": False,
+            "device": 1,
+            **kwargs,
+        }
+    )
 
 
 def snapshot(path, epoch, step):
@@ -135,9 +149,15 @@ def train(directory, epochs, checkpoint_path=None, ema=True):
     checkpoint = YOLOCheckpoint(directory)
     callbacks = [EMA()] if ema else []
     trainer = Trainer(
-        accelerator="cpu", devices=1, max_epochs=epochs, callbacks=[*callbacks, checkpoint],
-        logger=False, enable_progress_bar=False, enable_model_summary=False,
-        default_root_dir=directory, num_sanity_val_steps=1,
+        accelerator="cpu",
+        devices=1,
+        max_epochs=epochs,
+        callbacks=[*callbacks, checkpoint],
+        logger=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        default_root_dir=directory,
+        num_sanity_val_steps=1,
     )
     model = CheckpointModel()
     loader = DataLoader(TensorDataset(torch.ones(4, 2)), batch_size=2)

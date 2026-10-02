@@ -62,6 +62,12 @@ keypoint training/OKS evaluation, skeleton inference and pose export. See the
 Run a one-epoch 1/20 COCO execution smoke test with
 `python scripts/smoke_pose.py --output runs/pose-smoke`.
 Pose heads require training; detector weights alone do not produce trained keypoints.
+Pose training, validation, and PyTorch inference support `resize_mode=letterbox`
+and `resize_mode=stretch`. Pose currently requires NMS and floating-point weights;
+NMS-free and QAT are detection-only features. Pose ONNX export is supported,
+but the portable `ONNXDetector` runner currently decodes detection models only.
+
+For optional one-to-one training and inference without NMS, see the [NMS-free guide (한국어)](docs/nms-free.md).
 
 For a reproducible COCO 1/20 subset and training/validation speed comparisons, see the [subset performance guide (한국어)](docs/performance-coco-subset.md).
 
@@ -103,12 +109,42 @@ python yolo/lazy.py task=inference \ # default is inference
                     device=cpu \ # hardware cuda, cpu, mps
                     model=v9-s \ # model version: v9-c, m, s
                     task.nms.min_confidence=0.1 \ # nms config
-                    task.fast_inference=onnx \ # onnx, trt, deploy
                     task.data.source=data/toy/images/train \ # file, dir, webcam
                     +quiet=True \ # Quiet Output
 yolo task.data.source={Any Source} # if pip installed
 yolo task=inference task.data.source={Any}
 ```
+
+For an exported ONNX model (including QDQ), use its file as `weight`:
+
+```shell
+pip install -e '.[export-onnx]'
+python yolo/lazy.py task=inference weight=runs/export/v9-dev/v9-c.onnx \
+    task.data.source=demo/images/inference/image.png name=onnx-demo
+```
+
+This runs ONNX Runtime without constructing a PyTorch model or Lightning Trainer.
+Input size and decoder settings come from the ONNX artifact. Results are saved as
+`runs/inference/onnx-demo/frame00000000.jpg` and `predictions.jsonl`;
+`task.save_predict=false` disables saving. CPU is the default; select runtime
+providers explicitly with `task.onnx.providers=[CUDAExecutionProvider,CPUExecutionProvider]`
+when using `onnxruntime-gpu`. `device` and `accelerator` do not select ONNX providers.
+
+**Portable single-file inference:** copy [onnx_inference.py](yolo/tools/onnx_inference.py)
+and the ONNX model anywhere. The file needs no repository installation or PyTorch:
+
+```shell
+pip install numpy Pillow onnxruntime
+python onnx_inference.py --model model.onnx --source image.jpg --output results
+# Image folders, videos and webcams are also supported (video/webcam needs OpenCV).
+pip install opencv-python-headless
+python onnx_inference.py --model model.onnx --source video.mp4 --output results
+```
+
+The file includes RGB letterboxing, DFL decoding, class-aware multi-label NMS,
+original-image coordinate restoration, drawing, and JSONL output. See
+[ONNX inference details](docs/4_deploy/2_onnx.rst) for the Python API, old export
+compatibility and options.
 
 ### Validation
 
@@ -142,7 +178,9 @@ TFLite and YOLOv7 ONNX retain decoded `[B,N,4+C]` output:
 `[x1, y1, x2, y2, class_0_score, ...]` in input-image pixels. YOLOv7 scores include objectness.
 All exports exclude auxiliary outputs, NMS and confidence filtering. Internal ONNX
 tensors, constants, and weights are checked to have at most four dimensions.
-Training and checkpoint formats are unchanged; export does not itself perform INT8 quantization.
+FP training and checkpoint formats are unchanged; ordinary export does not itself perform INT8 quantization.
+For YOLOv9 convolution QAT and encoding-preserving QDQ ONNX, see [QAT guide](docs/qat.md).
+Use `qat.enabled=true` for fine-tuning and `task.qdq=true` to export a trained QAT checkpoint.
 Input is float32 RGB `[batch_size, 3, height, width]`, scaled to `[0, 1]`; perform
 resize/letterbox preprocessing and NMS in your application.
 

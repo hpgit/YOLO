@@ -83,7 +83,9 @@ def create_validation_metric(validation_cfg, dataset_cfg):
 class BaseModel(LightningModule):
     def __init__(self, cfg: Config):
         super().__init__()
-        self.model = create_model(cfg.model, class_num=cfg.dataset.class_num, weight_path=cfg.weight)
+        self.model = create_model(
+            cfg.model, class_num=cfg.dataset.class_num, weight_path=cfg.weight, qat_cfg=getattr(cfg, "qat", None)
+        )
         if getattr(self.model, "pose_config", None) is not None:
             if cfg.dataset.class_num != 1:
                 raise ValueError("Pose baseline requires a single person class; use dataset=coco-pose.")
@@ -123,7 +125,9 @@ class ValidateModel(BaseModel):
         self.vec2box = create_converter(
             self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
         )
-        self.post_process = PostProcess(self.vec2box, self.validation_cfg.nms)
+        self.post_process = PostProcess(
+            self.vec2box, self.validation_cfg.nms, nms_free=getattr(self.model, "nms_free", False)
+        )
 
     def val_dataloader(self):
         return self.val_loader
@@ -133,7 +137,12 @@ class ValidateModel(BaseModel):
         H, W = images.shape[2:]
         predicts = self.post_process(self.ema(images, shortcut="Main"), image_size=[W, H])
         if isinstance(self.metric, CocoJsonEvaluator):
-            self.metric.update(predicts, img_paths, image_size=[W, H])
+            self.metric.update(
+                predicts,
+                img_paths,
+                image_size=[W, H],
+                resize_mode=getattr(self.validation_cfg.data, "resize_mode", "letterbox"),
+            )
         else:
             self.metric.update(
                 [to_metrics_format(predict) for predict in predicts], [to_metrics_format(target) for target in targets]
@@ -166,11 +175,29 @@ class TrainModel(ValidateModel):
         self.cfg = cfg
         self.automatic_optimization = False
         self._last_opt_step = -1
-        self.train_loader = create_dataloader(self.cfg.task.data, self.cfg.dataset, self.cfg.task.task)
+        self.train_loader = create_dataloader(
+            self.cfg.task.data,
+            self.cfg.dataset,
+            self.cfg.task.task,
+            close_mosaic=getattr(self.cfg.task, "close_mosaic", 0),
+            epoch_provider=self._mosaic_epoch,
+        )
 
     def setup(self, stage):
+        if hasattr(self.model, "qat_metadata") and self.trainer.world_size != 1:
+            raise ValueError(
+                "QAT currently requires one device; distributed observer synchronization is not implemented."
+            )
+        if hasattr(self.model, "qat_metadata") and self.trainer.precision != "32-true":
+            raise ValueError("QAT requires precision='32-true'; mixed precision is not supported.")
         super().setup(stage)
         self.loss_fn = create_loss_function(self.cfg, self.vec2box)
+
+    def _mosaic_epoch(self):
+        # Lightning starts prefetch before on_train_start normalizes the public
+        # current_epoch after resume. Use the processed counter, as its sampler
+        # epoch setup does, so an epoch-end checkpoint starts with the new policy.
+        return self.trainer.fit_loop.epoch_progress.current.processed, self.trainer.max_epochs
 
     def train_dataloader(self):
         return self.train_loader
@@ -183,6 +210,9 @@ class TrainModel(ValidateModel):
             self.trainer.optimizers[0].max_lr = max_lr
 
     def on_train_epoch_start(self):
+        from yolo.tools.qat import set_qat_epoch
+
+        set_qat_epoch(self.model, self.current_epoch)
         batches = self.trainer.num_training_batches
         if not isfinite(batches) or batches <= 0:
             raise ValueError("Training requires a finite, nonempty number of batches.")
@@ -222,12 +252,22 @@ class TrainModel(ValidateModel):
     def on_save_checkpoint(self, checkpoint):
         if getattr(self.model, "pose_config", None) is not None:
             checkpoint["pose_config"] = dict(self.model.pose_config)
+        if hasattr(self.model, "qat_metadata"):
+            checkpoint["qat"] = self.model.qat_metadata
+        checkpoint["nms_free"] = getattr(self.model, "nms_free", False)
         checkpoint["training_accumulation"] = {"last_opt_step": self._last_opt_step}
         checkpoint["training_optimizer"] = {"max_lr": getattr(self.trainer.optimizers[0], "max_lr", None)}
 
     def on_load_checkpoint(self, checkpoint):
         if checkpoint.get("pose_config") != getattr(self.model, "pose_config", None):
             raise ValueError("Resume checkpoint pose_config does not match this model.")
+        saved_nms_free = checkpoint.get(
+            "nms_free", any(".one2one_heads." in key for key in checkpoint.get("state_dict", {}))
+        )
+        if saved_nms_free != getattr(self.model, "nms_free", False):
+            raise ValueError("Training checkpoint NMS-free structure does not match model.nms_free.")
+        if checkpoint.get("qat") != getattr(self.model, "qat_metadata", None):
+            raise ValueError("Training checkpoint QAT structure/profile does not match the model.")
         self._last_opt_step = checkpoint.get("training_accumulation", {}).get("last_opt_step", -1)
         self._restored_optimizer_max_lr = checkpoint.get("training_optimizer", {}).get("max_lr")
 
@@ -235,9 +275,13 @@ class TrainModel(ValidateModel):
         lr_dict = self.trainer.optimizers[0].next_batch()
         batch_size, images, targets, *_ = batch
         predicts = self(images)
-        aux_predicts = self.vec2box(predicts["AUX"])
+        aux_predicts = self.vec2box(predicts["AUX"]) if "AUX" in predicts else None
         main_predicts = self.vec2box(predicts["Main"])
-        loss, loss_item = self.loss_fn(aux_predicts, main_predicts, targets)
+        if getattr(self.model, "nms_free", False):
+            one2one_predicts = self.vec2box(predicts["One2One"])
+            loss, loss_item = self.loss_fn(aux_predicts, main_predicts, targets, one2one_predicts=one2one_predicts)
+        else:
+            loss, loss_item = self.loss_fn(aux_predicts, main_predicts, targets)
         self.log_dict(
             loss_item,
             prog_bar=True,
@@ -259,6 +303,9 @@ class TrainModel(ValidateModel):
 
     def configure_optimizers(self):
         optimizer = create_optimizer(self.model, self.cfg.task.optimizer)
+        if hasattr(self.model, "qat_metadata"):
+            # Fine-tuning fused biases must not inherit FP training's 0.1 bias warmup.
+            optimizer.max_lr = [self.cfg.task.optimizer.args.lr] * len(optimizer.param_groups)
         scheduler = create_scheduler(optimizer, self.cfg.task.scheduler)
         return [optimizer], [scheduler]
 
@@ -274,7 +321,9 @@ class InferenceModel(BaseModel):
         self.vec2box = create_converter(
             self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device
         )
-        self.post_process = PostProcess(self.vec2box, self.cfg.task.nms)
+        self.post_process = PostProcess(
+            self.vec2box, self.cfg.task.nms, nms_free=getattr(self.model, "nms_free", False)
+        )
 
     def predict_dataloader(self):
         return self.predict_loader
@@ -286,8 +335,11 @@ class InferenceModel(BaseModel):
             # Integer resize produces slightly different x/y gains on odd sizes.
             width, height = origin_frame.size
             target_h, target_w = images.shape[-2:]
-            gain = min(target_w / width, target_h / height)
-            resized_w, resized_h = int(width * gain), int(height * gain)
+            if getattr(self.cfg.task.data, "resize_mode", "letterbox") == "stretch":
+                resized_w, resized_h = target_w, target_h
+            else:
+                gain = min(target_w / width, target_h / height)
+                resized_w, resized_h = max(1, int(width * gain)), max(1, int(height * gain))
             rev_tensor = images.new_tensor(
                 [[resized_w / width, resized_h / height, (target_w - resized_w) // 2, (target_h - resized_h) // 2]]
             )

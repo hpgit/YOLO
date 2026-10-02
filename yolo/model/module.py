@@ -1,4 +1,5 @@
 import math
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -127,7 +128,21 @@ class MultiheadDetection(nn.Module):
             [DetectionHead((in_channels[0], in_channel), num_classes, **head_kwargs) for in_channel in in_channels]
         )
 
-    def forward(self, x_list: List[torch.Tensor]) -> List[torch.Tensor]:
+    def enable_nms_free(self):
+        """Add an independent one-to-one head without changing legacy parameter names."""
+        if not all(isinstance(head, Detection) for head in self.heads):
+            raise ValueError("NMS-free detection requires YOLOv9 Detection heads.")
+        if not hasattr(self, "one2one_heads"):
+            self.one2one_heads = deepcopy(self.heads)
+
+    def forward(self, x_list: List[torch.Tensor]):
+        if hasattr(self, "one2one_heads"):
+            # The dense branch trains the shared backbone/neck. One-to-one loss
+            # trains its own predictors without conflicting backbone gradients.
+            one2one = [head(x.detach()) for x, head in zip(x_list, self.one2one_heads)]
+            if not self.training:
+                return one2one
+            return {"Main": [head(x) for x, head in zip(x_list, self.heads)], "One2One": one2one}
         return [head(x) for x, head in zip(x_list, self.heads)]
 
 
@@ -265,6 +280,8 @@ class RepConv(nn.Module):
         self.conv2 = Conv(in_channels, out_channels, 1, activation=False, **kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
+        if hasattr(self, "reparam"):
+            return self.act(self.reparam(x))
         return self.act(self.conv1(x) + self.conv2(x))
 
 
@@ -432,6 +449,47 @@ class ADown(nn.Module):
         x2 = self.max_pool(x2)
         x2 = self.conv2(x2)
         return torch.cat((x1, x2), dim=1)
+
+
+class FixedKernelConv2d(nn.Module):
+    """Channel-wise 3x3 smoothing, stride 1 and zero padding 1, without BN/activation.
+
+    The kernel is a non-persistent buffer: optimizers and model.requires_grad_()
+    cannot unfreeze it, and EMA/checkpoint loading cannot alter its coefficients.
+    It is recreated on construction and follows module device/dtype conversions.
+    """
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.groups = channels
+        kernel = torch.tensor([[5, 27, 5], [27, 127, 27], [5, 27, 5]], dtype=torch.float32) / 255
+        self.register_buffer("weight", kernel.view(1, 1, 3, 3).repeat(channels, 1, 1, 1), persistent=False)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return F.conv2d(x, self.weight, stride=1, padding=1, groups=self.groups)
+
+
+class AConv2(AConv):
+    """AConv with fixed 3x3 smoothing in place of average pooling.
+
+    Retains the avg_pool attribute for the shared forward path. Output spatial
+    dimensions are ceil(H/2), ceil(W/2), including for odd input sizes.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__(in_channels, out_channels)
+        self.avg_pool = FixedKernelConv2d(in_channels)
+
+
+class ADown2(ADown):
+    """ADown with fixed 3x3 smoothing; the max-pooling branch is preserved.
+
+    Like AConv2, output spatial dimensions are ceil(H/2), ceil(W/2).
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__(in_channels, out_channels)
+        self.avg_pool = FixedKernelConv2d(in_channels)
 
 
 class CBLinear(nn.Module):

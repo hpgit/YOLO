@@ -17,7 +17,6 @@ from pycocotools.cocoeval import COCOeval
 
 from yolo.utils.coco_eval import CocoJsonEvaluator
 
-
 METRIC_NAMES = (
     "map",
     "map_50",
@@ -414,3 +413,24 @@ def test_distributed_compute_deduplicates_by_lowest_rank_and_broadcasts(coco_fix
         _assert_official_metrics(result, expected)
     for name in (*METRIC_NAMES, "classes"):
         torch.testing.assert_close(rank_results[0][name], rank_results[1][name], rtol=0, atol=0)
+
+
+def test_stretch_matches_direct_official_coco_metrics(coco_fixture):
+    evaluator = CocoJsonEvaluator(coco_fixture["annotation_path"], coco_fixture["image_root"])
+    for image in coco_fixture["dataset"]["images"]:
+        if image["id"] not in coco_fixture["native"]:
+            continue
+        prediction = torch.tensor(
+            [[cls, *box, score] for cls, box, score in coco_fixture["native"][image["id"]]], dtype=torch.float64
+        ).reshape(-1, 6)
+        prediction[:, [1, 3]] *= TARGET_SIZE[0] / image["width"]
+        prediction[:, [2, 4]] *= TARGET_SIZE[1] / image["height"]
+        evaluator.update(
+            [prediction], [coco_fixture["image_root"] / image["file_name"]], TARGET_SIZE, resize_mode="stretch"
+        )
+    expected = _direct_coco_stats(
+        coco_fixture["annotation_path"], _native_coco_detections(coco_fixture["native"]), (101, 205, 309)
+    )
+    _assert_official_metrics(evaluator.compute(), expected)
+    clipped = next(item for item in evaluator.predictions if item["score"] == pytest.approx(0.20))
+    assert clipped["bbox"] == pytest.approx([990, 560, 11, 13], abs=1e-7)
