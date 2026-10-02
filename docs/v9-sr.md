@@ -52,6 +52,14 @@ and permits gradients through the input. It is omitted from state dictionaries
 so EMA and checkpoint loading cannot change it; constructing the module
 recreates the fixed kernel before restoring a checkpoint.
 
+With `qat.enabled=true`, smoothing applies per-tensor UINT8 fake quantization
+to its input, including the preceding SiLU output. The fixed kernel is unchanged;
+no weight or output fake quantizer is added to smoothing. Its input observer uses
+the regular QAT schedule and is saved/restored and exported as ONNX Q/DQ with
+the learned encoding. Older SR QAT checkpoints without this observer cannot be
+loaded strictly; start a new QAT run from FP weights. FP behavior is unchanged.
+See [QAT documentation](qat.md) for the checkpoint and deployment contracts.
+
 Tests cover kernel values, channel isolation, padding, backward propagation,
 SGD/AdamW updates, reloads, EMA, and all four models' Main/AUX output shapes.
 The m variant also checks actual convolution input widths and verifies that no

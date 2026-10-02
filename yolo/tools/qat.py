@@ -1,7 +1,8 @@
 """Deploy-structure convolution QAT with portable ONNX Q/DQ encodings.
 
-This is a mixed graph: W8A8 Conv2d boundaries, float bias/nonlinearities/merges
-and float probability outputs. Vendor compilation is a separate deployment step.
+This is a mixed graph: W8A8 Conv2d boundaries, input-only activation quantization
+for fixed smoothing, float bias/nonlinearities/merges and probability outputs.
+Vendor compilation is a separate deployment step.
 """
 
 from copy import deepcopy
@@ -17,7 +18,13 @@ from torch.ao.quantization import (
 )
 from torch.nn.utils.fusion import fuse_conv_bn_eval
 
-from yolo.model.module import Anchor2Vec, Conv, MultiheadDetection, RepConv
+from yolo.model.module import (
+    Anchor2Vec,
+    Conv,
+    FixedKernelConv2d,
+    MultiheadDetection,
+    RepConv,
+)
 
 
 class TrainingFakeQuantize(FakeQuantize):
@@ -89,6 +96,20 @@ class QATConv2d(nn.Conv2d):
         return self.output_fake_quant(self._conv_forward(x, weight, self.bias))
 
 
+class QATFixedKernelConv2d(FixedKernelConv2d):
+    """Quantize smoothing inputs while preserving the fixed, non-persistent kernel."""
+
+    @classmethod
+    def from_float(cls, source, averaging_constant):
+        module = cls(source.groups).to(source.weight)
+        module.weight = source.weight
+        module.input_fake_quant = activation_quantizer(averaging_constant).to(source.weight.device)
+        return module
+
+    def forward(self, x):
+        return super().forward(self.input_fake_quant(x))
+
+
 def quantizers(model):
     return ((name, module) for name, module in model.named_modules() if isinstance(module, TrainingFakeQuantize))
 
@@ -145,6 +166,8 @@ def prepare_qat(model, config):
         for name, child in list(parent.named_children()):
             if type(child) is nn.Conv2d:
                 setattr(parent, name, QATConv2d.from_float(child, options["averaging_constant"]))
+            elif type(child) is FixedKernelConv2d:
+                setattr(parent, name, QATFixedKernelConv2d.from_float(child, options["averaging_constant"]))
     model.qat_metadata = {
         "version": 1,
         "profile": "conv_w8a8",

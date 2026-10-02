@@ -11,12 +11,13 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from tests.conftest import get_cfg
-from yolo.model.module import RepConv
+from yolo.model.module import FixedKernelConv2d, RepConv
 from yolo.model.yolo import create_model
 from yolo.tools.export import ExportModel, export_model, validate_onnx_tensor_ranks
 from yolo.tools.loss_functions import create_loss_function
 from yolo.tools.qat import (
     QATConv2d,
+    QATFixedKernelConv2d,
     checkpoint_weights,
     configure_qat_run,
     deploy_model,
@@ -91,13 +92,15 @@ def test_deploy_fusion_preserves_float_main_outputs():
             torch.testing.assert_close(a, b, atol=2e-5, rtol=2e-5)
 
 
-def test_real_detection_loss_backpropagates_and_observers_freeze():
-    cfg = config()
+@pytest.mark.parametrize("model_name", ["v9-t", "v9-sr-t", "v9-sr-c"])
+def test_real_detection_loss_backpropagates_and_observers_freeze(model_name):
+    cfg = config(f"model={model_name}")
     model = model_for(cfg).train()
     converter = create_converter(cfg.model.name, model, cfg.model.anchor, list(cfg.image_size), "cpu")
     loss_fn = create_loss_function(cfg, converter)
     conv = next(layer for layer in model.modules() if isinstance(layer, QATConv2d))
     initial = [parameter.detach().clone() for parameter in model.parameters()]
+    fixed = [(layer, layer.weight.clone()) for layer in model.modules() if isinstance(layer, FixedKernelConv2d)]
     images = torch.rand(2, 3, 32, 64)
     targets = torch.tensor([[[1, 8, 4, 48, 28]], [[2, 12, 5, 52, 29]]], dtype=torch.float32)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.001)
@@ -106,6 +109,9 @@ def test_real_detection_loss_backpropagates_and_observers_freeze():
     loss.backward()
     assert conv.weight.grad is not None and conv.weight.grad.abs().sum() > 0
     optimizer.step()
+    for layer, weight in fixed:
+        torch.testing.assert_close(layer.weight, weight, rtol=0, atol=0)
+        assert layer.weight.grad is None and not layer.weight.requires_grad
     assert any(not torch.equal(before, after) for before, after in zip(initial, model.parameters()))
     state = deepcopy(encoding_manifest(model))
     stats = {name: q.activation_post_process.min_val.clone() for name, q in quantizers(model)}
@@ -120,17 +126,18 @@ def test_real_detection_loss_backpropagates_and_observers_freeze():
 
 
 @pytest.mark.parametrize("dynamic", [False, True])
-def test_qdq_runtime_encodings_and_rank(tmp_path, dynamic):
+@pytest.mark.parametrize("model_name", ["v9-t", "v9-sr-t", "v9-sr-c"])
+def test_qdq_runtime_encodings_and_rank(tmp_path, dynamic, model_name):
     onnx = pytest.importorskip("onnx")
     ort = pytest.importorskip("onnxruntime")
-    cfg = config()
+    cfg = config(f"model={model_name}")
     model = calibrated(cfg)
     path = tmp_path / "qat.pt"
     torch.save(checkpoint_weights(model), path)
     export_cfg = get_cfg(
         [
             "task=export",
-            "model=v9-t",
+            f"model={model_name}",
             "dataset.class_num=3",
             "image_size=[64,32]",
             f"weight={path}",
@@ -147,7 +154,22 @@ def test_qdq_runtime_encodings_and_rank(tmp_path, dynamic):
     metadata = {item.key: item.value for item in graph.metadata_props}
     manifest = json.loads(metadata["yolo.qat.encodings"])
     q_nodes = [node for node in graph.graph.node if node.op_type == "QuantizeLinear"]
-    assert len(q_nodes) == len(manifest) == 3 * sum(isinstance(layer, QATConv2d) for layer in model.modules())
+    smoothing_count = sum(isinstance(layer, QATFixedKernelConv2d) for layer in model.modules())
+    assert (
+        len(q_nodes)
+        == len(manifest)
+        == (3 * sum(isinstance(layer, QATConv2d) for layer in model.modules()) + smoothing_count)
+    )
+    # Each fixed smoothing Conv must consume its own input Q/DQ directly.
+    producers = {output: node for node in graph.graph.node for output in node.output}
+    smoothing_nodes = [node for node in graph.graph.node if node.op_type == "Conv" and "/avg_pool/" in node.name]
+    assert len(smoothing_nodes) == smoothing_count
+    for node in smoothing_nodes:
+        dq = producers[node.input[0]]
+        assert dq.op_type == "DequantizeLinear"
+        q = producers[dq.input[0]]
+        assert q.op_type == "QuantizeLinear" and "/avg_pool/input_fake_quant/" in q.name
+        assert producers[node.input[1]].op_type == "Constant"
     constants = {tensor.name: onnx.numpy_helper.to_array(tensor) for tensor in graph.graph.initializer}
     for node in graph.graph.node:
         if node.op_type == "Identity" and node.input[0] in constants:
@@ -228,9 +250,11 @@ def test_fail_closed_and_profile_restore(tmp_path):
 
 
 @pytest.mark.parametrize("warmup", [False, True])
-def test_lightning_train_resume_and_best_checkpoint(tmp_path, monkeypatch, warmup):
+@pytest.mark.parametrize("model_name", ["v9-t", "v9-sr-t"])
+def test_lightning_train_resume_and_best_checkpoint(tmp_path, monkeypatch, warmup, model_name):
     first_epochs = 2 if warmup else 1
     cfg = config(
+        f"model={model_name}",
         f"task.epoch={first_epochs + 1}",
         f"qat.fake_quant_start_epoch={int(warmup)}",
         f"qat.observer_freeze_epoch={first_epochs}",
@@ -282,9 +306,17 @@ def test_lightning_train_resume_and_best_checkpoint(tmp_path, monkeypatch, warmu
     assert any(not torch.equal(a, b) for a, b in zip(resumed.model.parameters(), module.model.parameters()))
 
 
-def test_warmup_schedule_and_stride_probe_do_not_calibrate():
-    cfg = config("qat.fake_quant_start_epoch=1", "qat.observer_freeze_epoch=3")
+@pytest.mark.parametrize("model_name", ["v9-t", "v9-sr-t", "v9-sr-s", "v9-sr-m", "v9-sr-c"])
+def test_warmup_schedule_and_stride_probe_do_not_calibrate(model_name):
+    cfg = config(f"model={model_name}", "qat.fake_quant_start_epoch=1", "qat.observer_freeze_epoch=3")
     model = model_for(cfg)
+    smoothers = [layer for layer in model.modules() if isinstance(layer, FixedKernelConv2d)]
+    assert bool(smoothers) == model_name.startswith("v9-sr-")
+    assert all(isinstance(layer, QATFixedKernelConv2d) for layer in smoothers)
+    assert all(list(dict(quantizers(layer))) == ["input_fake_quant"] for layer in smoothers)
+    original_quantizers = dict(quantizers(model))
+    assert prepare_qat(model, cfg.qat) is model
+    assert dict(quantizers(model)) == original_quantizers
     assert model.training
     create_converter(cfg.model.name, model, cfg.model.anchor, list(cfg.image_size), "cpu")
     assert all(
@@ -300,6 +332,45 @@ def test_warmup_schedule_and_stride_probe_do_not_calibrate():
     set_qat_epoch(model, 3)
     assert all(q.fake_quant_enabled.item() == 1 and q.observer_enabled.item() == 0 for _, q in quantizers(model))
     assert all(layer.bias.requires_grad for layer in model.modules() if isinstance(layer, QATConv2d))
+
+
+def test_smoothing_quantizes_input_and_preserves_fixed_kernel():
+    source = FixedKernelConv2d(2)
+    model = QATFixedKernelConv2d.from_float(source, 1.0).train()
+    model.requires_grad_(True)
+    x = torch.linspace(-0.3, 1.1, 2 * 7 * 9).reshape(1, 2, 7, 9).requires_grad_()
+    model.input_fake_quant.disable_fake_quant()
+    torch.testing.assert_close(model(x), source(x), rtol=0, atol=0)
+    model.input_fake_quant.disable_observer()
+    model.input_fake_quant.enable_fake_quant()
+    q = model.input_fake_quant
+    quantized = torch.fake_quantize_per_tensor_affine(x, q.scale, q.zero_point, 0, 255)
+    assert not torch.equal(x, quantized)
+    actual = model(x)
+    torch.testing.assert_close(actual, source(quantized), rtol=0, atol=0)
+    assert not torch.equal(actual, source(x))
+    actual.square().mean().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all() and x.grad.abs().sum() > 0
+    assert not list(model.parameters()) and "weight" not in model.state_dict()
+    assert not model.weight.requires_grad and model.weight.grad is None
+    torch.testing.assert_close(model.weight, source.weight, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("lightning", [False, True])
+def test_legacy_sr_qat_without_smoothing_observer_is_rejected(tmp_path, lightning):
+    cfg = config("model=v9-sr-t")
+    model = calibrated(cfg)
+    checkpoint = checkpoint_weights(model)
+    state = checkpoint.pop("model_state_dict")
+    state = {key: value for key, value in state.items() if ".avg_pool.input_fake_quant." not in key}
+    if lightning:
+        checkpoint["state_dict"] = {f"model.{key}": value for key, value in state.items()}
+    else:
+        checkpoint["model_state_dict"] = state
+    path = tmp_path / ("legacy.ckpt" if lightning else "legacy.pt")
+    torch.save(checkpoint, path)
+    with pytest.raises(RuntimeError, match=r"Missing key.*avg_pool.input_fake_quant"):
+        create_model(deepcopy(cfg.model), path, 3)
 
 
 def test_export_requires_matching_checkpoint_and_qdq_flag(tmp_path, monkeypatch):

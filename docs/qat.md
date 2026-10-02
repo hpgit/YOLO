@@ -15,6 +15,7 @@
 | 학습 head | Main만 사용; AUX 제거, 기존 BCE/IoU/DFL loss 사용 |
 | Conv2d weight | 출력 채널별 symmetric INT8, axis=0, 범위 -128…127 |
 | Conv2d 입력·출력 | 텐서별 affine UINT8, 범위 0…255 |
+| SR fixed smoothing | 입력만 텐서별 affine UINT8 FQ; 고정 kernel 유지, 자체 weight/output FQ 없음 |
 | Bias | float; 정수 bias 표현은 대상 컴파일러 단계에서 결정 |
 | SiLU, Add, Concat, Pool, resize | float 연산; 이어지는 convolution 입력에서 다시 fake quantization |
 | 최종 Sigmoid·Softmax·Concat | float 확률 출력 |
@@ -65,6 +66,10 @@ RepConv fusion은 **fake quantization 이전**에 수행합니다.
 QAT `best.pt`에는 모델 구조를 재구성할 metadata, fused weights, observer min/max,
 scale, zero-point, enable flags가 저장됩니다. 일반 FP weight-only 파일과 형식이 다릅니다.
 QAT 모델은 구조·클래스·reg_max를 검사하고 state를 strict하게 로드합니다.
+SR smoothing의 입력 observer도 같은 일정으로 수집·동결되며 체크포인트에 저장됩니다.
+입력 FQ 추가 이전의 SR QAT 체크포인트는 이 상태가 없어 strict 로딩에 실패합니다.
+이 경우 FP 체크포인트에서 새 이름으로 QAT를 시작해야 합니다. 기존 일반 v9 QAT와
+SR FP 체크포인트 형식은 바뀌지 않습니다.
 
 ```bash
 # full optimizer/scheduler/observer 상태에서 재개
@@ -102,6 +107,8 @@ QAT weight를 일반 FP/TFLite export에 주는 경우도 오류를 내어 QDQ�
 - 내부 텐서·가중치·상수를 포함해 rank ≤ 4 검증.
 - ONNX opset ≥ 13, 기본 17. `task.dynamic_batch=true` 지원, 공간 크기는 고정.
 - 각각의 fake quantizer를 `QuantizeLinear` → `DequantizeLinear`로 내보냄.
+- SR smoothing 입력의 Q/DQ와 encoding도 포함. 고정 kernel은 float 상수로 유지하며,
+  smoothing 자체의 INT8 실행 여부는 대상 컴파일러에서 별도 확인.
 - Export 복사본의 weight를 학습한 양자화 격자에 맞춰 저장하여 half-bin 반올림 차이를 방지.
   학습 원본 weight와 scale/zero-point는 변경하지 않음.
 - ONNX metadata `yolo.qat`, `yolo.qat.encodings`에 프로파일과 모든 scale/zero-point 기록.
