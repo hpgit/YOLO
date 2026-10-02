@@ -29,9 +29,13 @@ class YOLO(nn.Module):
         self.layer_map = get_layer_map()  # Get the map Dict[str: Module]
         self.model: List[YOLOLayer] = nn.ModuleList()
         self.reg_max = getattr(model_cfg.anchor, "reg_max", 16)
+        pose_config = getattr(model_cfg, "pose", None)
+        self.pose_config = dict(pose_config) if pose_config is not None else None
         self.nms_free = getattr(model_cfg, "nms_free", False)
         if not isinstance(self.nms_free, bool):
             raise ValueError("model.nms_free must be a boolean.")
+        if self.pose_config is not None and self.nms_free:
+            raise ValueError("Pose models do not support model.nms_free=true.")
         self.build_model(model_cfg.model)
         if self.nms_free:
             main_index = self.layer_index.get("Main")
@@ -64,13 +68,18 @@ class YOLO(nn.Module):
                 # Find in channels
                 if any(module in layer_type for module in ["Conv", "ELAN", "ADown", "AConv", "CBLinear"]):
                     layer_args["in_channels"] = output_dim[source]
-                if any(module in layer_type for module in ["Detection", "Segmentation", "Classification"]):
+                if any(module in layer_type for module in ["Detection", "Segmentation", "Classification", "Pose"]):
                     if isinstance(source, list):
                         layer_args["in_channels"] = [output_dim[idx] for idx in source]
                     else:
                         layer_args["in_channel"] = output_dim[source]
                     layer_args["num_classes"] = self.num_classes
                     layer_args["reg_max"] = self.reg_max
+                if layer_type == "MultiheadPose":
+                    if self.pose_config is None:
+                        raise ValueError("MultiheadPose requires model.pose configuration")
+                    for key in ("num_keypoints", "pose_bins", "pose_range"):
+                        layer_args[key] = self.pose_config[key]
 
                 # create layers
                 layer = self.create_layer(layer_type, source, layer_info, **layer_args)
@@ -157,19 +166,26 @@ class YOLO(nn.Module):
         nms_free = getattr(self, "nms_free", False)
         if isinstance(weights, Path):
             weights = torch.load(weights, map_location=torch.device("cpu"), weights_only=False)
-        checkpoint_state = weights.get("model_state_dict", weights.get("state_dict", weights))
+        self.loaded_pose_config = weights.get("pose_config")
+        if self.loaded_pose_config is not None and self.loaded_pose_config != getattr(self, "pose_config", None):
+            raise ValueError("Checkpoint pose_config does not match the configured keypoint bins/range/layout.")
+        checkpoint_state = weights.get("weights", weights.get("model_state_dict", weights.get("state_dict", weights)))
         has_one2one = any(".one2one_heads." in name for name in checkpoint_state)
         if has_one2one and not nms_free:
             raise ValueError(
                 "NMS-free checkpoint requires model.nms_free=true; refusing to discard one-to-one weights."
             )
         if "qat" in weights:
+            if getattr(self, "pose_config", None) is not None:
+                raise ValueError("Pose models currently do not support QAT checkpoints.")
             if nms_free:
                 raise ValueError("NMS-free detection currently supports floating-point checkpoints only, not QAT.")
             from yolo.tools.qat import load_qat_state
 
             load_qat_state(self, weights)
+            self.weight_load_report = {"missing": [], "mismatch": []}
             return
+        weights = checkpoint_state
         if "state_dict" in weights:
             weights = weights["state_dict"]
         # Accept released inner-module weights, YOLO state_dicts, and Lightning
@@ -189,14 +205,17 @@ class YOLO(nn.Module):
         # TODO2: weight transform if num_class difference
 
         error_dict = {"Mismatch": set(), "Not Found": set()}
+        self.weight_load_report = {"missing": [], "mismatch": []}
         for model_key, model_weight in model_state_dict.items():
             if nms_free and not has_one2one and ".one2one_heads." in model_key:
                 continue  # Initialized from the loaded dense branch below.
             if model_key not in weights:
                 error_dict["Not Found"].add(tuple(model_key.split(".")[:-2]))
+                self.weight_load_report["missing"].append(model_key)
                 continue
             if model_weight.shape != weights[model_key].shape:
                 error_dict["Mismatch"].add(tuple(model_key.split(".")[:-2]))
+                self.weight_load_report["mismatch"].append(model_key)
                 continue
             model_state_dict[model_key] = weights[model_key]
 
@@ -217,6 +236,21 @@ class YOLO(nn.Module):
             main_head.one2one_heads.load_state_dict(main_head.heads.state_dict())
             logger.info("Initialized NMS-free one-to-one heads from loaded Main detection weights.")
 
+    def require_pose_weights(self):
+        """Reject incomplete/misconfigured pose inference checkpoints."""
+        if self.pose_config is None:
+            return
+        if getattr(self, "loaded_pose_config", None) != self.pose_config:
+            raise ValueError(
+                "Pose inference needs a pose checkpoint with matching pose_config metadata. "
+                "Detection weights may initialize task=train, but cannot infer trained keypoints."
+            )
+        report = self.weight_load_report
+        main_index = self.layer_index["Main"] - 1
+        missing = [key for key in report["missing"] + report["mismatch"] if int(key.split(".", 1)[0]) <= main_index]
+        if missing:
+            raise ValueError(f"Pose inference checkpoint is incomplete: {len(missing)} missing/mismatched tensors.")
+
 
 def create_model(
     model_cfg: ModelConfig, weight_path: Union[bool, Path] = True, class_num: int = 80, qat_cfg=None
@@ -229,6 +263,12 @@ def create_model(
     Returns:
         YOLO: An instance of the model defined by the given configuration.
     """
+    if getattr(model_cfg, "pose", None) is not None and weight_path is True:
+        raise ValueError(
+            "Pose models require an explicit checkpoint path or weight=false; pretrained pose weights are not bundled."
+        )
+    if getattr(model_cfg, "pose", None) is not None and qat_cfg is not None and qat_cfg.enabled:
+        raise ValueError("Pose models currently do not support QAT training.")
     OmegaConf.set_struct(model_cfg, False)
     model = YOLO(model_cfg, class_num)
     if model.nms_free and qat_cfg is not None and qat_cfg.enabled:

@@ -1,3 +1,4 @@
+import math
 import random
 from typing import List, Optional, Union
 
@@ -9,6 +10,52 @@ from torchvision.transforms.functional import to_pil_image
 from yolo.config.config import ModelConfig
 from yolo.model.yolo import YOLO
 from yolo.utils.logger import logger
+
+# Zero-based COCO skeleton; custom keypoint layouts can supply their own edges.
+COCO_SKELETON = (
+    (15, 13),
+    (13, 11),
+    (16, 14),
+    (14, 12),
+    (11, 12),
+    (5, 11),
+    (6, 12),
+    (5, 6),
+    (5, 7),
+    (6, 8),
+    (7, 9),
+    (8, 10),
+    (1, 2),
+    (0, 1),
+    (0, 2),
+    (1, 3),
+    (2, 4),
+    (3, 5),
+    (4, 6),
+)
+
+
+def draw_poses(img, predictions, *, idx2label=None, confidence=0.5, skeleton=None):
+    """Draw [class,xyxy,score,K*(x,y,confidence)] rows without changing inputs."""
+    rows = predictions[0] if isinstance(predictions, list) or predictions.ndim == 3 else predictions
+    img = draw_bboxes(img, rows[:, :6], idx2label=idx2label)
+    points = rows[:, 6:].detach().cpu().reshape(len(rows), (rows.shape[1] - 6) // 3, 3)
+    count = points.shape[1]
+    if skeleton is None:
+        skeleton = COCO_SKELETON if count == 17 else ()
+    if any(len(edge) != 2 or any(index < 0 or index >= count for index in edge) for edge in skeleton):
+        raise ValueError("Skeleton edges must reference valid zero-based keypoint indices.")
+    draw = ImageDraw.Draw(img)
+    for instance in points.tolist():
+        valid = [all(math.isfinite(v) for v in point) and point[2] >= confidence for point in instance]
+        for start, end in skeleton:
+            if valid[start] and valid[end]:
+                draw.line((*instance[start][:2], *instance[end][:2]), fill=(0, 220, 100), width=2)
+        for index, (x, y, _) in enumerate(instance):
+            if valid[index]:
+                x, y = round(x), round(y)
+                draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(255, 100, 30))
+    return img
 
 
 def draw_bboxes(

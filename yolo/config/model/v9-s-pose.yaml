@@ -1,0 +1,55 @@
+# Inherit the detection model's backbone, neck and FPN head.
+defaults:
+  - v9-s
+  - _self_
+
+name: v9-s-pose
+
+# Signed coordinate distributions, in stride units from each grid center.
+pose:
+  num_keypoints: 17
+  pose_bins: 64
+  pose_range: 32.0
+
+model:
+  detection:
+    - MultiheadPose:
+        source: [P3, P4, P5]
+        tags: Main
+        output: True
+
+# Hydra replaces lists, so retain all auxiliary feature layers explicitly.
+  auxiliary:
+    - SPPELAN:
+        source: B5
+        args: {out_channels: 256}
+        tags: A5
+
+    - UpSample:
+        args: {scale_factor: 2, mode: nearest}
+    - Concat:
+        source: [-1, B4]
+
+    - RepNCSPELAN:
+        args:
+            out_channels: 192
+            part_channels: 192
+            csp_args: {repeat_num: 3}
+        tags: A4
+
+    - UpSample:
+        args: {scale_factor: 2, mode: nearest}
+    - Concat:
+        source: [-1, B3]
+
+    - RepNCSPELAN:
+        args:
+            out_channels: 128
+            part_channels: 128
+            csp_args: {repeat_num: 3}
+        tags: A3
+
+    - MultiheadPose:
+        source: [A3, A4, A5]
+        tags: AUX
+        output: True

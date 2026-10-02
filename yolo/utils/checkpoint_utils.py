@@ -53,6 +53,11 @@ class YOLOCheckpoint(ModelCheckpoint):
                         }
                     else:
                         weights = {key: value.detach().cpu() for key, value in weights.items()}
+                    if getattr(detector, "pose_config", None) is not None:
+                        if "qat" in weights:
+                            weights["pose_config"] = dict(detector.pose_config)
+                        else:
+                            weights = {"weights": weights, "pose_config": dict(detector.pose_config)}
                     destination = Path(self.dirpath) / "best.pt"
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     temporary = destination.with_suffix(".pt.tmp")

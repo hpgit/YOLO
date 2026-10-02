@@ -241,6 +241,13 @@ class NMSFreeLoss(DualLoss):
 
 def create_loss_function(cfg: Config, vec2box) -> DualLoss:
     # TODO: make it flexible, if cfg doesn't contain aux, only use SingleLoss
-    loss_function = NMSFreeLoss(cfg, vec2box) if getattr(cfg.model, "nms_free", False) else DualLoss(cfg, vec2box)
+    if getattr(vec2box, "pose_config", None) is not None:
+        if getattr(cfg.model, "nms_free", False):
+            raise ValueError("Pose models do not support model.nms_free=true.")
+        from yolo.tools.pose_loss import DualPoseLoss
+
+        loss_function = DualPoseLoss(cfg, vec2box)
+    else:
+        loss_function = NMSFreeLoss(cfg, vec2box) if getattr(cfg.model, "nms_free", False) else DualLoss(cfg, vec2box)
     logger.info(":white_check_mark: Success load loss function")
     return loss_function

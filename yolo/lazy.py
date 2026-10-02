@@ -47,7 +47,9 @@ def main(cfg: Config):
         accelerator=getattr(cfg, "accelerator", "auto"),
         devices=cfg.device,
         max_epochs=getattr(cfg.task, "epoch", None),
-        precision="32-true" if getattr(getattr(cfg, "qat", None), "enabled", False) else "16-mixed",
+        precision=(
+            "32-true" if getattr(getattr(cfg, "qat", None), "enabled", False) else getattr(cfg, "precision", "16-mixed")
+        ),
         callbacks=callbacks,
         sync_batchnorm=True,
         logger=loggers,

@@ -298,6 +298,11 @@ def create_dataloader(
     if task == "inference":
         return StreamDataLoader(data_cfg)
 
+    if getattr(dataset_cfg, "pose", False):
+        from yolo.tools.pose_dataset import create_pose_dataloader
+
+        return create_pose_dataloader(data_cfg, dataset_cfg, task)
+
     shuffle = data_cfg.shuffle
     if shuffle and getattr(data_cfg, "dynamic_shape", False):
         raise ValueError("dynamic_shape=True requires shuffle=False so each batch has matching image shapes.")

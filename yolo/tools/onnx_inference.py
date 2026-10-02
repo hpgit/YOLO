@@ -135,6 +135,8 @@ class ONNXDetector:
         metadata = json.loads(props.get("yolo.inference", "{}"))
         if metadata and metadata.get("version") != 1:
             raise ValueError("Unsupported yolo.inference metadata version.")
+        if metadata.get("pose_config") is not None or str(metadata.get("output_format", "")).startswith("pose"):
+            raise ValueError("Portable ONNX inference does not support pose models.")
         self.nms_free = metadata.get("nms_free", nms_free)
         if not isinstance(self.nms_free, bool):
             raise ValueError("nms_free must be a boolean in ONNX metadata or fallback arguments.")

@@ -69,6 +69,8 @@ class CocoJsonEvaluator:
     :func:`yolo.tools.data_conversion.discretize_categories`.
     """
 
+    metric_names = METRIC_NAMES
+
     def __init__(
         self,
         annotation_path: Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]],
@@ -371,7 +373,7 @@ class CocoJsonEvaluator:
         records = self._gather_records()
         if not distributed:
             metrics = self._evaluate(records)
-            result = {name: torch.tensor(metrics[name], dtype=torch.float64) for name in METRIC_NAMES}
+            result = {name: torch.tensor(metrics[name], dtype=torch.float64) for name in self.metric_names}
             result["classes"] = torch.arange(len(self._category_ids), dtype=torch.int64)
             return result
 
@@ -390,6 +392,6 @@ class CocoJsonEvaluator:
         if not packet["ok"]:
             raise RuntimeError("COCO evaluation failed ({}): {}".format(packet["error_type"], packet["error"]))
 
-        result = {name: torch.tensor(packet["metrics"][name], dtype=torch.float64) for name in METRIC_NAMES}
+        result = {name: torch.tensor(packet["metrics"][name], dtype=torch.float64) for name in self.metric_names}
         result["classes"] = torch.arange(len(self._category_ids), dtype=torch.int64)
         return result

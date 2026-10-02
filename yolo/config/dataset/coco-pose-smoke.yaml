@@ -1,0 +1,9 @@
+defaults:
+  - coco-pose
+  - _self_
+
+# Deterministic 1/20 sampling is over every split image ID, including images
+# with no person annotations. ceil(N * fraction) gives 5,915 train / 250 val.
+fraction:
+  train: 0.05
+  validation: 0.05
