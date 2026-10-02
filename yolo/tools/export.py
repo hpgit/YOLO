@@ -230,13 +230,13 @@ def export_model(cfg: Config) -> Path:
         output_shape = tuple(wrapper(sample).shape)
     output.parent.mkdir(parents=True, exist_ok=True)
     if task.format == "onnx":
-        dynamic_axes = {"images": {0: "batch_size"}, "predictions": {0: "batch_size"}} if task.dynamic_batch else None
+        dynamic_axes = {"images": {0: "batch_size"}, "output": {0: "batch_size"}} if task.dynamic_batch else None
         torch.onnx.export(
             wrapper,
             sample,
             str(output),
             input_names=["images"],
-            output_names=["predictions"],
+            output_names=["output"],
             opset_version=task.opset,
             dynamic_axes=dynamic_axes,
             dynamo=False,

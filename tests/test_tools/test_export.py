@@ -166,6 +166,9 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
     assert all(len(tensor.dims) <= 4 for tensor in graph.graph.initializer)
     assert {name for node in graph.graph.node for name in node.output if name} <= {v.name for v in values}
     assert len(graph.graph.output) == 1
+    assert graph.graph.output[0].name == "output"
+    if dynamic:
+        assert graph.graph.output[0].type.tensor_type.shape.dim[0].dim_param == "batch_size"
     assert not any("NonMaxSuppression" in node.op_type for node in graph.graph.node)
     options = ort.SessionOptions()
     options.intra_op_num_threads = 2
@@ -176,7 +179,7 @@ def test_onnx_runtime(tmp_path, monkeypatch, dynamic, version, reg_max):
             expected = probability_reference(model(images, shortcut="Main")["Main"]).numpy()
         else:
             expected = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name)(images).numpy()
-    actual = session.run(None, {"images": images.numpy()})[0]
+    actual = session.run(["output"], {"images": images.numpy()})[0]
     assert actual.shape == expected.shape
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4)
     # Exercise the portable consumer against an independent PyTorch decoder.
