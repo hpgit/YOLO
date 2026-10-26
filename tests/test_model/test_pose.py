@@ -18,7 +18,7 @@ def cpu_threads():
     torch.set_num_threads(previous)
 
 
-@pytest.mark.parametrize("variant", ["t", "s", "m", "c"])
+@pytest.mark.parametrize("variant", ["t", "s", "m", "c", "sr-t", "sr-s", "sr-m", "sr-c"])
 def test_pose_configs_compose_and_forward_both_branches(variant):
     cfg = get_cfg([f"model=v9-{variant}-pose", "weight=false"])
     model = create_model(deepcopy(cfg.model), class_num=1, weight_path=False).eval()
@@ -90,9 +90,10 @@ def test_pose_has_no_implicit_pretrained_download():
         create_model(deepcopy(cfg.model), class_num=1, weight_path=True)
 
 
-def test_partial_detection_transfer_reports_missing_pose_parameters():
-    detection_cfg = get_cfg(["model=v9-t"])
-    pose_cfg = get_cfg(["model=v9-t-pose"])
+@pytest.mark.parametrize("variant", ["t", "sr-t", "sr-s", "sr-m", "sr-c"])
+def test_partial_detection_transfer_reports_missing_pose_parameters(variant):
+    detection_cfg = get_cfg([f"model=v9-{variant}"])
+    pose_cfg = get_cfg([f"model=v9-{variant}-pose"])
     detection = create_model(deepcopy(detection_cfg.model), class_num=1, weight_path=False)
     pose = create_model(deepcopy(pose_cfg.model), class_num=1, weight_path=False)
     pose.save_load_weights(detection.model.state_dict())

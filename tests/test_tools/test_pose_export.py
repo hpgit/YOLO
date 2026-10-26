@@ -67,8 +67,9 @@ def independent_reference(model, cfg, images, probabilities):
 
 
 @pytest.mark.parametrize("probabilities", [False, True])
-def test_pose_export_matches_independent_head_reference(probabilities):
-    cfg = pose_config()
+@pytest.mark.parametrize("variant", ["t", "sr-t", "sr-s", "sr-m", "sr-c"])
+def test_pose_export_matches_independent_head_reference(probabilities, variant):
+    cfg = pose_config(f"model=v9-{variant}-pose")
     model = create_model(deepcopy(cfg.model), class_num=1, weight_path=False).eval()
     wrapper = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name, probabilities=probabilities)
     images = torch.rand(2, 3, 32, 64)
@@ -82,10 +83,11 @@ def test_pose_export_matches_independent_head_reference(probabilities):
 
 @pytest.mark.parametrize("probabilities", [False, True])
 @pytest.mark.parametrize("dynamic", [False, True])
-def test_pose_onnx_runtime_and_all_internal_ranks(tmp_path, probabilities, dynamic):
+@pytest.mark.parametrize("variant", ["t", "sr-t", "sr-s", "sr-m", "sr-c"])
+def test_pose_onnx_runtime_and_all_internal_ranks(tmp_path, probabilities, dynamic, variant):
     onnx = pytest.importorskip("onnx")
     ort = pytest.importorskip("onnxruntime")
-    cfg = pose_config()
+    cfg = pose_config(f"model=v9-{variant}-pose")
     model = create_model(deepcopy(cfg.model), class_num=1, weight_path=False).eval()
     wrapper = ExportModel(model, cfg.model.anchor, list(cfg.image_size), cfg.model.name, probabilities=probabilities)
     path = tmp_path / "pose.onnx"

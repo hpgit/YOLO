@@ -65,3 +65,27 @@ SGD/AdamW updates, reloads, EMA, and all four models' Main/AUX output shapes.
 The m variant also checks actual convolution input widths and verifies that no
 convolution input/output width shrinks relative to v9-m.
 These checks establish execution correctness; detection accuracy is unmeasured.
+
+## Pose variants
+
+Select `model=v9-sr-t-pose`, `model=v9-sr-s-pose`, `model=v9-sr-m-pose`, or
+`model=v9-sr-c-pose` for COCO keypoint training, validation, inference and export:
+
+```sh
+yolo task=train-pose model=v9-sr-t-pose dataset=coco-pose weight=false
+```
+
+Both Main and AUX use the existing grid-relative signed-DFL pose heads, with
+17 keypoints, 64 bins and a range of 32 strides by default. All SR feature layers,
+fixed smoothing, SiLU activations and M's widened channels are preserved.
+The additional pose tower uses the common pose head widths; M's detection-model
+channel-alignment guarantee does not extend to every additional pose convolution.
+Matching SR detection weights can initialize training; inference requires a
+matching trained pose checkpoint with `pose_config` metadata. Automatic pretrained
+pose downloads, pose QAT and NMS-free pose are unsupported.
+
+See the [pose commands and output contracts](pose/IMPLEMENTATION_KO.md); replace
+`model=v9-t-pose` with the desired SR pose model in those commands. Tests cover
+all four SR pose sizes through Main/AUX forward and loss/backward, optimizer
+updates, checkpoint reload, skeleton postprocessing and ONNX Runtime parity.
+These are execution checks, not trained pose accuracy measurements.

@@ -9,6 +9,13 @@ RTMO의 DCC/MLE 구현을 가져온 것이 아니며, 고정 signed offset bins�
 각 Main/AUX P3/P4/P5 head에 별도의 pose tower를 추가한다. 기존 cls/bbox parameter 이름을 유지하므로
 검출 checkpoint의 일치하는 weight를 학습 초기화에 사용할 수 있다. class 수가 다르면 class 출력은 초기화된다.
 
+SR 모델은 `v9-sr-t-pose`, `v9-sr-s-pose`, `v9-sr-m-pose`, `v9-sr-c-pose`로 선택한다.
+동일 크기 SR 검출 모델의 backbone/FPN 및 AUX 구조를 상속하고 Main/AUX 모두 pose head로 바꾼다.
+T/S/M의 AConv2, C의 ADown2 고정 smoothing과 SiLU를 유지하며, M의 확장 채널도 AUX까지 유지한다.
+아래 학습·검증·추론·export 명령의 `model`을 해당 SR pose 이름으로 바꾸면 같은 경로를 사용한다.
+학습 초기화에는 대응하는 SR 검출 checkpoint를 사용할 수 있고, 추론에는 해당 SR pose 모델로 학습한
+`pose_config` 포함 checkpoint를 사용한다. SR pose도 QAT와 `model.nms_free=true`는 지원하지 않는다.
+
 기본값:
 
 - 사람 1 class, COCO 17 keypoints.

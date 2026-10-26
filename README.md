@@ -56,7 +56,7 @@ These are simple examples. For more customization details, please refer to [Note
 
 ### Grid-relative pose baseline
 
-YOLOv9 T/S/M/C pose variants add independent signed-DFL keypoint heads, COCO
+YOLOv9 and YOLOv9-SR T/S/M/C pose variants add independent signed-DFL keypoint heads, COCO
 keypoint training/OKS evaluation, skeleton inference and pose export. See the
 [pose implementation and commands (한국어)](docs/pose/IMPLEMENTATION_KO.md).
 Run a one-epoch 1/20 COCO execution smoke test with
