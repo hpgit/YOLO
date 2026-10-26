@@ -142,7 +142,12 @@ ONNX shape inference로 **모든 내부 tensor rank ≤ 4**를 검사한다.
 640 입력에서 관절 logits만 이미지당 Main 또는 AUX 출력 전체 기준 약 73 MB(float32)이므로 큰 batch의 메모리 사용은 별도 확인해야 한다.
 `model.pose.pose_bins`와 `model.pose.pose_range`로 bins/range를 조정할 수 있다.
 실제 ONNX Runtime에서 probability/decoded, 고정/동적 batch 출력을 비교한다.
-TFLite runtime은 optional `litert_torch` 의존성이 필요하다. 이번 환경에서 설치되지 않아 실행 검증하지 않았다.
+TFLite는 별도 Python 3.12 환경에 `pip install -e '.[export-tflite]'`로 설치한다.
+이 extra는 검증용 LiteRT Torch/PyTorch/TorchAO 버전을 고정한다. CPU 설치와 테스트 명령은
+[export 안내](../3_custom/3_task.rst)를 참고한다. TFLite CI는 backend import를 필수로 검사하고,
+`v9-t-pose` 및 `v9-sr-{t,s,m,c}-pose`의 COCO 17관절 출력, PyTorch와의 수치 일치 및
+모든 내부 tensor rank ≤ 4를 검사한다. 이 검증은 CPU float32 변환·실행 검사이며 모바일 NPU
+성능이나 학습된 pose 정확도를 측정하지 않는다.
 
 ## 참고
 

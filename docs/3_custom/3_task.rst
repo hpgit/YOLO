@@ -9,10 +9,29 @@ a dataset, or starting WandB. It loads weights using the existing model loader;
 ``weight=False`` explicitly exports an untrained model for conversion tests.
 
 Install ONNX dependencies with ``pip install -e '.[export-onnx]'``. For TFLite,
-use a separate Python 3.11+ environment and install
-``pip install -e '.[export-tflite]'``. The latter uses Google's
+use a separate Python 3.12 environment and install
+``pip install -e '.[export-tflite]'``. The extra pins the tested LiteRT Torch
+0.10.0 / LiteRT 2.3.0 / PyTorch 2.14.1 / torchvision 0.29.1 / TorchAO 0.18.0
+stack. It also pins ``backports-strenum==1.2.8`` because LiteRT requires the
+backport unconditionally while version 1.3.1 excludes Python 3.11 and newer.
+These optional requirements do not change the base training dependencies.
+The exporter uses Google's
 `LiteRT Torch converter <https://github.com/google-ai-edge/litert-torch/blob/main/docs/pytorch_converter/README.md>`_
-and may require a newer PyTorch than the training environment.
+and needs its own PyTorch version rather than the existing training environment's.
+
+To reproduce the Linux CPU export checks with uv::
+
+    uv venv --python 3.12 .venv-tflite
+    uv pip install --python .venv-tflite/bin/python --torch-backend cpu -e '.[export-tflite]' pytest
+    uv pip check --python .venv-tflite/bin/python
+    .venv-tflite/bin/python -c 'import litert_torch; from ai_edge_litert.interpreter import Interpreter'
+    OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv-tflite/bin/python -m pytest \
+        tests/test_tools/test_export.py tests/test_tools/test_pose_export.py -k tflite -q -rs
+
+The dedicated TFLite CI job installs this extra and requires backend imports
+before running tests, so a missing converter cannot silently skip the job.
+Runtime checks cover YOLOv7, YOLOv9-T detection, YOLOv9-T pose and all four
+YOLOv9-SR pose sizes, including full COCO keypoint output and internal tensor ranks.
 
 Example::
 

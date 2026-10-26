@@ -122,10 +122,19 @@ def test_export_entrypoint_keeps_pose_channels(tmp_path):
     assert graph.graph.output[0].type.tensor_type.shape.dim[-1].dim_value == 116
 
 
-def test_pose_tflite_runtime_and_all_internal_ranks(tmp_path, monkeypatch):
+@pytest.mark.parametrize("variant", ["t", "sr-t", "sr-s", "sr-m", "sr-c"])
+def test_pose_tflite_runtime_and_all_internal_ranks(tmp_path, monkeypatch, variant):
     pytest.importorskip("litert_torch")
     interpreter_module = pytest.importorskip("ai_edge_litert.interpreter")
-    cfg = pose_config("task.format=tflite", "task.batch_size=2", f"task.output={tmp_path / 'pose.tflite'}")
+    cfg = pose_config(
+        f"model=v9-{variant}-pose",
+        "model.pose.num_keypoints=17",
+        "model.pose.pose_bins=64",
+        "model.pose.pose_range=32",
+        "task.format=tflite",
+        "task.batch_size=2",
+        f"task.output={tmp_path / 'pose.tflite'}",
+    )
     model = create_model(deepcopy(cfg.model), class_num=1, weight_path=False).eval()
     monkeypatch.setattr("yolo.tools.export.create_model", lambda *args, **kwargs: model)
     path = export_model(cfg)
@@ -138,5 +147,5 @@ def test_pose_tflite_runtime_and_all_internal_ranks(tmp_path, monkeypatch):
     interpreter.set_tensor(interpreter.get_input_details()[0]["index"], images.numpy())
     interpreter.invoke()
     actual = interpreter.get_tensor(interpreter.get_output_details()[0]["index"])
-    assert actual.shape == (2, 42, 14)
+    assert actual.shape == (2, 42, 56)
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4)

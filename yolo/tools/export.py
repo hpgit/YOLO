@@ -228,7 +228,10 @@ def export_model(cfg: Config) -> Path:
         try:
             import litert_torch
         except ImportError as exc:
-            raise ImportError('TFLite export requires: pip install -e ".[export-tflite]" (Python >= 3.11)') from exc
+            raise ImportError(
+                'TFLite export requires: pip install -e ".[export-tflite]" '
+                "in a separate export environment (tested with Python 3.12)."
+            ) from exc
 
     output = (
         Path(task.output)
