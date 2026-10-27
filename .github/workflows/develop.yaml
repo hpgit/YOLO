@@ -71,13 +71,14 @@ jobs:
     - name: Install TFLite export dependencies
       run: |
         python -m pip install --upgrade uv
-        uv pip install --python python --torch-backend cpu -e ".[export-tflite]" pytest
-        uv pip check --python python
+        uv venv --python python .venv-tflite
+        uv pip install --python .venv-tflite/bin/python --torch-backend cpu -e ".[export-tflite]" pytest
+        uv pip check --python .venv-tflite/bin/python
 
     - name: Require TFLite backend imports
-      run: python -c "import litert_torch; from ai_edge_litert.interpreter import Interpreter"
+      run: .venv-tflite/bin/python -c "import litert_torch; from ai_edge_litert.interpreter import Interpreter"
 
     - name: Test TFLite conversion and runtime parity
       run: >-
-        python -m pytest tests/test_tools/test_export.py
+        .venv-tflite/bin/python -m pytest tests/test_tools/test_export.py
         tests/test_tools/test_pose_export.py -k tflite -q -rs
