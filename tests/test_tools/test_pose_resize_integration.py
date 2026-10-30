@@ -50,7 +50,7 @@ def test_pose_dataset_inversion_and_coco_update(tmp_path, mode):
     else:
         torch.testing.assert_close(reverse, torch.tensor([79 / 101, 81 / 57, 0, 0]))
     boxes = targets[:, 1:5].unsqueeze(0)
-    points = targets[:, 5:].reshape(1, 1, 17, 3)
+    points = targets[:, 5:56].reshape(1, 1, 17, 3)
     restored_boxes, restored_points = reverse_pose_coordinates(boxes, points, reverse.unsqueeze(0))
     torch.testing.assert_close(restored_boxes[0, 0], torch.tensor([10.0, 15.0, 60.0, 45.0]))
     torch.testing.assert_close(restored_points[0, 0], torch.tensor(joints).reshape(17, 3))
@@ -59,7 +59,7 @@ def test_pose_dataset_inversion_and_coco_update(tmp_path, mode):
     boxes6, points6 = reverse_pose_coordinates(boxes, points, metadata)
     torch.testing.assert_close(boxes6, restored_boxes)
     torch.testing.assert_close(points6, restored_points)
-    prediction = torch.cat((targets[:, :5], torch.ones(1, 1), targets[:, 5:]), dim=1)
+    prediction = torch.cat((targets[:, :5], torch.ones(1, 1), targets[:, 5:56]), dim=1)
     evaluator = CocoPoseEvaluator(path)
     evaluator.update([prediction], [image_path], data.image_size, resize_mode=mode)
     detection = evaluator._records[1][0]

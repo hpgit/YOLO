@@ -50,21 +50,59 @@ postprocess는 class별 bbox NMS가 고른 **동일 grid의 전체 skeleton**을
 
 COCO `person_keypoints_train2017.json` / `person_keypoints_val2017.json`과 기존 이미지를 사용한다.
 COCO 경로에는 cache나 subset 파일을 쓰지 않는다. class index는 person=0이며,
-학습 target은 `[class,xyxy,(x,y,v)*17]`, padding class는 -1이다.
+학습 target은 `[class,xyxy,(x,y,v)*17,area,gain_x,gain_y]` (59열), padding class는 -1이다.
+`area`는 COCO annotation의 segmentation 면적을 기하 변환한 값이다. 유효 bbox의 annotation에는
+양의 유한 `area`가 반드시 있어야 한다. `gain_x/gain_y`는 마지막 resize의 정확한 배율이다.
+loss를 직접 호출하는 기존 56열 target은 호환을 위해 GT bbox 면적을 사용하지만, 이는 공식 annotation
+area를 쓰는 경로와 다르다. COCO loader는 항상 59열을 전달한다. 예측·추론·export 출력 형식은 그대로다.
 
 - bbox/cls loss: 기존 TAL, CIoU, DFL, BCE.
-- pose: 같은 TAL positive 전체에 인접 두 bin의 soft CE(DFL)를 적용한다.
+- pose: 분포의 기댓값을 `grid_center + stride * offset` 픽셀 좌표로 decode하고 **1-OKS**를 적용한다.
+  같은 stride offset 오차도 실제 픽셀 크기, 관절별 sigma, annotation area에 따라 다른 페널티를 받는다.
+  DFL은 보조 loss로 유지한다. 큰 오차에서 OKS gradient가 포화될 때도 DFL이 분포를 지도한다.
+- 각 positive 안에서 labeled 관절의 OKS loss를 평균한다. DFL은 해당 positive의 지도 가능한 x/y 좌표를
+  평균하며, visibility BCE는 전체 관절을 평균한다. 세 pose loss 모두 detached TAL target score 합을
+  positive 가중치로 사용하고, `max(유효 positive의 가중치 합, 1)`로 정규화한다.
+  좌표가 없는 사람은 좌표 loss의 분모에서도 제외하지만 visibility BCE에는 포함한다.
 - `v=1`(가려졌지만 위치 annotation 있음), `v=2` 모두 좌표를 지도한다.
 - confidence BCE target은 `v>0`이다. 따라서 출력은 **annotation 가능한 관절의 confidence**이며
   visible/occluded 이진 분류나 보정된 localization 확률이라고 해석하지 않는다.
-- 범위 밖 좌표는 끝 bin으로 clamp하지 않고 해당 좌표 loss에서 제외한다.
+- 범위 밖 좌표는 끝 bin으로 clamp하지 않고 해당 좌표의 **DFL에서만** 제외한다. OKS에는 labeled 관절을
+  그대로 포함한다. 큰 범위 초과가 잦다면 bins/range와 학습 해상도를 확인해야 한다.
   `Pose/OutOfRangeCoordinates`, `Pose/LabeledCoordinates`, `Pose/OutOfRangeFraction`으로 범위를 관찰한다.
   Lightning의 epoch 값은 batch 가중 평균이며 count 항목도 epoch 총합은 아니다.
 - person이 있지만 keypoint가 없는 annotation은 bbox supervision을 유지한다. 빈 이미지도 포함한다.
 - crowd는 학습 target에서 제외한다. validation GT의 crowd/visibility/area는 공식 JSON 값을 유지한다.
-- 첫 baseline augmentation은 letterbox와 좌우 관절 swap을 포함한 horizontal flip이다.
-  기존 bbox 전용 Mosaic/YOLOv9 recipe를 pose에 잘못 적용하지 않도록 다른 recipe는 명시적으로 거부한다.
-  이 설정은 upstream 검출 학습 recipe 재현을 주장하지 않는다.
+- 학습 증강은 좌우 관절 swap을 포함한 flip, 색상 변화, 회전·이동·등방 확대/축소를 지원한다.
+  bbox는 네 꼭짓점을 변환하고 clip한다. 폭/높이 1픽셀 이하 또는 변환 bbox 면적의 20% 미만만 남은
+  사람은 제거한다. 화면 밖으로 나간 관절은 `(0,0,0)`으로 바꾸며, 남은 관절의 `v=1/2`는 보존한다.
+  affine은 resize 전에 수행한다. area는 affine의 면적 배율과 정확한 resize 배율 곱으로 변환한다.
+  crop 시에는 전체 인스턴스의 변환 면적을 유지한다. segmentation mask를 직접 자르지 않으므로
+  잘린 segmentation의 실제 면적과는 다를 수 있는 학습 증강의 근사다.
+  기존 bbox 전용 Mosaic/YOLOv9 recipe 및 validation 증강은 명시적으로 거부한다.
+
+OKS 식은 [공식 COCO 구현](https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocotools/cocoeval.py)의
+`e_i = squared_distance_i / (2 * (2 * sigma_i)^2 * area)` 및 `1 - mean(exp(-e_i))`를 따른다.
+stretch와 정수 letterbox에서도 원본 좌표계의 평가와 맞도록, 좌표 오차를 x/y gain으로 나누고
+area를 gain 곱으로 나눈 뒤 계산한다. 공식 COCO 17개 sigma를 기본 사용한다.
+다른 관절 배치는 `task.loss.oks_sigmas`에 관절별 값을 지정해야 한다.
+
+기본 학습 recipe는 다음과 같다. 계수만으로 실제 gradient 비중을 비교할 수 없으며,
+이 값은 검증된 AP 최적값이 아닌 비교 학습의 출발점이다.
+
+| 항목 | 기본값 |
+| --- | --- |
+| PoseOKSLoss / PoseDFLoss / PoseVisibilityLoss | 7.5 / 1.0 / 1.0 |
+| BoxLoss / DFLoss / BCELoss | 7.5 / 1.5 / 0.5 |
+| fliplr / degrees / translate / scale | 0.5 / 10 / 0.1 / 0.2 |
+| hsv_h / hsv_s / hsv_v | 0.015 / 0.4 / 0.4 |
+
+`degrees`는 ±도, `translate`는 각 축 이미지 크기의 ±비율, `scale`은 1±비율이다.
+HSV 옵션은 hue의 ±이동, saturation/brightness의 1±배율이다. 0은 해당 증강을 끈다.
+`task.loss.objective.PoseOKSLoss=0`으로 OKS만 끄는 ablation도 가능하다.
+이 경우 custom layout의 sigma는 필요 없다. 이전 모델 weight는 동일한 구조로 로드할 수 있지만,
+새 기본 recipe로 이어 학습한 결과는 이전 loss/증강 조건을 유지한 실험과 구분해야 한다.
+로그의 `Loss/PoseOKSLoss`를 포함한 loss 값에는 해당 계수와 auxiliary head 가중치가 반영된다.
 
 ```bash
 python -m yolo.lazy task=train-pose model=v9-t-pose dataset=coco-pose \

@@ -20,6 +20,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import functional as TF
 
+from yolo.tools.pose_augmentation import pose_color_jitter, random_pose_affine
 from yolo.utils.logger import logger
 from yolo.utils.resize import validate_resize_mode
 
@@ -46,34 +47,39 @@ def _phase_fraction(dataset_cfg, task: str, split: str) -> float:
     return fraction
 
 
-def _pose_flip_probability(data_cfg, task: str) -> float:
+def _pose_augmentation_config(data_cfg, task: str) -> dict[str, float]:
     augment = _config_value(data_cfg, "data_augment", {}) or {}
-    keys = set(augment.keys())
-    unsupported = keys - {"Pose"}
+    unsupported = set(augment.keys()) - {"Pose"}
     if unsupported:
-        raise ValueError(f"Pose data only supports data_augment.Pose.fliplr; got {sorted(unsupported)}")
-    pose = augment.get("Pose", {}) if hasattr(augment, "get") else {}
-    pose = pose or {}
-    unsupported_pose = set(pose.keys()) - {"fliplr"}
+        raise ValueError(f"Pose data only supports data_augment.Pose; got {sorted(unsupported)}")
+    pose = augment.get("Pose", {}) or {}
+    limits = {"fliplr": 1.0, "degrees": 180.0, "translate": 1.0, "scale": 1.0, "hsv_h": 0.5, "hsv_s": 1.0, "hsv_v": 1.0}
+    unsupported_pose = set(pose.keys()) - set(limits)
     if unsupported_pose:
         raise ValueError(f"Unsupported Pose augmentation options: {sorted(unsupported_pose)}")
-    probability = pose.get("fliplr", 0.0)
-    if isinstance(probability, bool) or not isinstance(probability, (int, float)):
-        raise ValueError("data_augment.Pose.fliplr must be a number in [0, 1]")
-    probability = float(probability)
-    if not math.isfinite(probability) or not 0 <= probability <= 1:
-        raise ValueError("data_augment.Pose.fliplr must be finite and in [0, 1]")
-    if task != "train" and probability != 0:
-        raise ValueError("Pose horizontal flip is only supported for training")
-    return probability
+    options = {}
+    for key, upper in limits.items():
+        value = pose.get(key, 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"data_augment.Pose.{key} must be a finite number")
+        value = float(value)
+        if not math.isfinite(value) or not 0 <= value <= upper or (key == "scale" and value == 1):
+            interval = "[0, 1)" if key == "scale" else f"[0, {upper}]"
+            raise ValueError(f"data_augment.Pose.{key} must be finite and in {interval}")
+        options[key] = value
+    if task != "train" and any(options.values()):
+        raise ValueError("Pose augmentation is only supported for training")
+    return options
 
 
 class CocoPoseDataset(Dataset):
-    """COCO person pose samples as ``[cls, xyxy, (x, y, v) * K]`` tensors.
+    """COCO samples as ``[cls, xyxy, (x, y, v) * K, area, gain_x, gain_y]``.
 
     Coordinates returned by :meth:`__getitem__` are absolute pixels in the
     resized image. People with no labeled keypoints remain as detection
     targets with zeroed keypoints. Crowd annotations are excluded from training.
+    The final metadata carries authoritative COCO instance area and exact resize
+    gains so OKS training can account for anisotropic resizing.
     """
 
     def __init__(self, data_cfg, dataset_cfg, task: str):
@@ -88,7 +94,8 @@ class CocoPoseDataset(Dataset):
         if len(self.image_size) != 2 or min(self.image_size) <= 0:
             raise ValueError("Pose image_size must contain positive [width, height]")
         self.resize_mode = validate_resize_mode(_config_value(data_cfg, "resize_mode", "letterbox"))
-        self.fliplr = _pose_flip_probability(data_cfg, task)
+        self.augmentation = _pose_augmentation_config(data_cfg, task)
+        self.fliplr = self.augmentation["fliplr"]
         self.num_keypoints = int(_config_value(dataset_cfg, "num_keypoints", 17))
         if self.num_keypoints != 17:
             raise ValueError("COCO pose annotations require dataset.num_keypoints=17")
@@ -172,7 +179,7 @@ class CocoPoseDataset(Dataset):
         if degenerate_boxes:
             logger.warning(f"Skipped {degenerate_boxes} COCO pose annotations with zero-area boxes in {self.split}")
 
-        target_width = 5 + self.num_keypoints * 3
+        target_width = 8 + self.num_keypoints * 3
         self.records = []
         for image_id in self.image_ids:
             image = image_by_id[image_id]
@@ -229,6 +236,10 @@ class CocoPoseDataset(Dataset):
         if x2 <= x1 or y2 <= y1:
             raise ValueError(f"Annotation {annotation_id} has an empty bbox after bounds validation")
 
+        area = annotation.get("area")
+        if isinstance(area, bool) or not isinstance(area, (int, float)) or not math.isfinite(float(area)) or area <= 0:
+            raise ValueError(f"Annotation {annotation_id} area must be finite and positive")
+
         raw_keypoints = annotation.get("keypoints", [0.0] * (self.num_keypoints * 3))
         if not isinstance(raw_keypoints, list) or len(raw_keypoints) != self.num_keypoints * 3:
             raise ValueError(f"Annotation {annotation_id} must contain {self.num_keypoints * 3} keypoint values")
@@ -256,7 +267,7 @@ class CocoPoseDataset(Dataset):
                 f"Annotation {annotation_id} num_keypoints={declared_count} does not match "
                 f"{visible_count} labeled points"
             )
-        return [0.0, x1, y1, x2, y2, *keypoints]
+        return [0.0, x1, y1, x2, y2, *keypoints, float(area), 1.0, 1.0]
 
     def __len__(self) -> int:
         return len(self.records)
@@ -276,6 +287,9 @@ class CocoPoseDataset(Dataset):
         targets = record["targets"].clone()
         if self.training and self.fliplr and torch.rand(()) < self.fliplr:
             image, targets = self._horizontal_flip(image, targets)
+        if self.training:
+            image, targets = random_pose_affine(image, targets, self.augmentation, self.num_keypoints)
+            image = pose_color_jitter(image, self.augmentation)
         image, targets, reverse = self._letterbox(image, targets)
         return TF.to_tensor(image), targets, reverse, str(image_path)
 
@@ -288,14 +302,14 @@ class CocoPoseDataset(Dataset):
         old_x2 = targets[:, 3].clone()
         targets[:, 1] = width - old_x2
         targets[:, 3] = width - old_x1
-        keypoints = targets[:, 5:].reshape(-1, self.num_keypoints, 3)
+        keypoints = targets[:, 5 : 5 + 3 * self.num_keypoints].reshape(-1, self.num_keypoints, 3)
         visible = keypoints[..., 2] > 0
         keypoints[..., 0] = torch.where(visible, width - keypoints[..., 0], keypoints[..., 0])
         keypoints = keypoints[:, COCO_KEYPOINT_FLIP_INDEX, :]
         invisible = keypoints[..., 2] == 0
         keypoints[..., 0] = keypoints[..., 0].masked_fill(invisible, 0)
         keypoints[..., 1] = keypoints[..., 1].masked_fill(invisible, 0)
-        targets[:, 5:] = keypoints.reshape(targets.size(0), -1)
+        targets[:, 5 : 5 + 3 * self.num_keypoints] = keypoints.reshape(targets.size(0), -1)
         return image, targets
 
     def _letterbox(self, image: Image.Image, targets: torch.Tensor):
@@ -315,9 +329,12 @@ class CocoPoseDataset(Dataset):
 
         if targets.numel():
             scale_x, scale_y = resized_width / width, resized_height / height
+            targets[:, -3] *= scale_x * scale_y
+            targets[:, -2] = scale_x
+            targets[:, -1] = scale_y
             targets[:, [1, 3]] = targets[:, [1, 3]] * scale_x + pad_left
             targets[:, [2, 4]] = targets[:, [2, 4]] * scale_y + pad_top
-            keypoints = targets[:, 5:].reshape(-1, self.num_keypoints, 3)
+            keypoints = targets[:, 5 : 5 + 3 * self.num_keypoints].reshape(-1, self.num_keypoints, 3)
             visible = keypoints[..., 2] > 0
             keypoints[..., 0] = torch.where(visible, keypoints[..., 0] * scale_x + pad_left, keypoints[..., 0])
             keypoints[..., 1] = torch.where(visible, keypoints[..., 1] * scale_y + pad_top, keypoints[..., 1])

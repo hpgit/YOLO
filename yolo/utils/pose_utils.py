@@ -6,6 +6,13 @@ from yolo.utils.bounding_box_utils import Vec2Box
 from yolo.utils.nms_utils import grouped_batched_nms
 
 
+def decode_pose_coordinates(logits, anchors, strides, pose_range):
+    """Decode [..., K, 2, bins] logits into pixel xy, accumulating in float32."""
+    bins = torch.linspace(-pose_range, pose_range, logits.shape[-1], device=logits.device, dtype=torch.float32)
+    offsets = (logits.float().softmax(-1) * bins).sum(-1)
+    return anchors.float()[..., None, :] + offsets * strides.float()[..., None, None]
+
+
 class Pose2Box(Vec2Box):
     """Decode signed keypoint offsets independently of predicted boxes.
 
@@ -25,11 +32,12 @@ class Pose2Box(Vec2Box):
         logits = torch.cat([head[3].flatten(2).transpose(1, 2) for head in predicts], 1)
         logits = logits.reshape(logits.shape[0], -1, 2 * self.num_keypoints, self.pose_bins)
         visibility = torch.cat([head[4].flatten(2).transpose(1, 2) for head in predicts], 1)
-        # Accumulate expectations in float32 even under mixed precision.
-        bins = torch.linspace(-self.pose_range, self.pose_range, self.pose_bins, device=logits.device)
-        offsets = (logits.float().softmax(-1) * bins).sum(-1)
-        offsets = offsets.reshape(offsets.shape[0], -1, self.num_keypoints, 2)
-        xy = self.anchor_grid[None, :, None, :] + offsets * self.scaler[None, :, None, None]
+        xy = decode_pose_coordinates(
+            logits.reshape(logits.shape[0], -1, self.num_keypoints, 2, self.pose_bins),
+            self.anchor_grid,
+            self.scaler,
+            self.pose_range,
+        )
         keypoints = torch.cat((xy, visibility.float().sigmoid()[..., None]), -1)
         return classes, anchors, boxes, logits, visibility, keypoints
 

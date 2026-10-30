@@ -20,6 +20,7 @@ def fixture_parts():
         task=SimpleNamespace(
             loss=SimpleNamespace(
                 matcher=matcher,
+                oks_sigmas=[0.1, 0.2],
                 aux=0.25,
                 objective={"BoxLoss": 7.5, "DFLoss": 1.5, "BCELoss": 0.5, "PoseDFLoss": 2.0, "PoseVisibilityLoss": 0.5},
             )
@@ -136,6 +137,7 @@ def test_pose_training_handles_empty_images_and_missing_joints(empty_kind):
     loss, metrics = DualPoseLoss(cfg, converter)(predictions, predictions, targets)
     assert torch.isfinite(loss)
     assert metrics["Loss/PoseDFLoss"].item() == 0
+    assert metrics["Loss/PoseOKSLoss"].item() == 0
     assert metrics["Pose/LabeledCoordinates"].item() == 0
     loss.backward()
     assert predictions[3].grad.count_nonzero() == 0
@@ -154,3 +156,77 @@ def test_training_reports_out_of_range_without_silent_clipping():
     torch.testing.assert_close(metrics["Pose/OutOfRangeFraction"], torch.tensor(1 / 6))
     loss.backward()
     assert predictions[3].grad[0, :2, 0].count_nonzero() == 0
+
+
+def test_pose_dfl_tal_weights_apply_per_positive_not_per_coordinate():
+    logits = torch.zeros(2, 2, 2, 5, requires_grad=True)
+    offsets = torch.zeros(2, 2, 2)
+    labeled = torch.tensor([[[True], [False]], [[True], [True]]])
+    weights = torch.tensor([0.75, 0.25], requires_grad=True)
+    loss, excluded, eligible = PoseDFLoss(5, 2.0)(logits, offsets, labeled, weights)
+    torch.testing.assert_close(loss, torch.tensor(5.0).log())
+    assert excluded == 0 and eligible == 6
+    loss.backward()
+    gradients = logits.grad.abs().sum((1, 2, 3))
+    torch.testing.assert_close(gradients[0], 3 * gradients[1])
+    assert weights.grad is None
+
+
+def test_training_oks_uses_annotation_area_exact_resize_and_expected_coordinates():
+    cfg, converter, targets, predictions = fixture_parts()
+    criterion = DualPoseLoss(cfg, converter)
+    targets = torch.cat((targets, torch.tensor([[[200.0, 2.0, 4.0], [128.0, 1.0, 1.0]]])), -1)
+    targets[0, 0, 5:11] = torch.tensor([6.0, 8.0, 1.0, 0.0, 0.0, 0.0])
+    matched = torch.zeros(1, 4, 5)
+    matched[0, 0] = torch.tensor([1.0, 0.0, 0.0, 16.0, 8.0])
+    criterion.loss.matcher = lambda *_args, **_kwargs: (
+        matched,
+        torch.tensor([[True, False, False, False]]),
+        torch.tensor([[0, -1, -1, -1]]),
+    )
+    losses, _, _ = criterion._head_loss(predictions, targets)
+    # Expected xy=[4,4], inverse-resize error=[1,1], original area=25.
+    # e=2/(2*(2*0.1)^2*25)=1. GT bbox area is deliberately different.
+    torch.testing.assert_close(losses[3], 1 - torch.tensor(-1.0).exp())
+    losses[3].backward()
+    assert predictions[3].grad[0, 0, :2].abs().sum() > 0
+    assert predictions[3].grad[0, 1:].count_nonzero() == 0
+
+
+def test_training_weights_all_pose_terms_with_the_same_tal_scores():
+    cfg, converter, targets, predictions = fixture_parts()
+    criterion = DualPoseLoss(cfg, converter)
+    matched = torch.zeros(1, 4, 5)
+    matched[0, :2, 0] = torch.tensor([0.75, 0.25])
+    matched[0, :2, 1:] = targets[0, 0, 1:5]
+    valid = torch.tensor([[True, True, False, False]])
+    criterion.loss.matcher = lambda *_args, **_kwargs: (matched, valid, torch.tensor([[0, 0, -1, -1]]))
+    with torch.no_grad():
+        predictions[4][0, 1] = 2
+    losses, _, _ = criterion._head_loss(predictions, targets)
+    expected_visibility = 0.75 * F.softplus(torch.tensor(0.0)) + 0.25 * F.softplus(torch.tensor(-2.0))
+    torch.testing.assert_close(losses[5], expected_visibility)
+    sum(losses[3:]).backward()
+    for index in (3, 4):
+        assert predictions[index].grad[0, :2].abs().sum() > 0
+        assert predictions[index].grad[0, 2:].count_nonzero() == 0
+
+
+def test_custom_layout_requires_explicit_sigmas():
+    cfg, converter, _, _ = fixture_parts()
+    del cfg.task.loss.oks_sigmas
+    with pytest.raises(ValueError, match="Non-COCO"):
+        DualPoseLoss(cfg, converter)
+    cfg.task.loss.oks_sigmas = [0.1]
+    with pytest.raises(ValueError, match="one sigma"):
+        DualPoseLoss(cfg, converter)
+
+
+def test_disabled_oks_allows_custom_layout_without_sigmas():
+    cfg, converter, targets, predictions = fixture_parts()
+    del cfg.task.loss.oks_sigmas
+    cfg.task.loss.objective["PoseOKSLoss"] = 0.0
+    loss, metrics = DualPoseLoss(cfg, converter)(None, predictions, targets)
+    assert metrics["Loss/PoseOKSLoss"] == 0
+    loss.backward()
+    assert predictions[3].grad.abs().sum() > 0

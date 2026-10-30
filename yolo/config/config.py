@@ -94,6 +94,7 @@ class LossConfig:
     aux: Union[bool, float]
     matcher: MatcherConfig
     one2one: float = 1.0
+    oks_sigmas: Optional[List[float]] = None
 
 
 @dataclass

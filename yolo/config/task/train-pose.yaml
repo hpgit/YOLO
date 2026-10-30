@@ -19,6 +19,12 @@ data:
   data_augment:
     Pose:
       fliplr: 0.5
+      degrees: 10.0
+      translate: 0.1
+      scale: 0.2
+      hsv_h: 0.015
+      hsv_s: 0.4
+      hsv_v: 0.4
 
 optimizer:
   type: SGD
@@ -29,10 +35,13 @@ optimizer:
     nesterov: true
 
 loss:
+  # null selects official COCO-17 sigmas; custom layouts must supply every sigma.
+  oks_sigmas: null
   objective:
     BCELoss: 0.5
     BoxLoss: 7.5
     DFLoss: 1.5
+    PoseOKSLoss: 7.5
     PoseDFLoss: 1.0
     PoseVisibilityLoss: 1.0
   aux: 0.25

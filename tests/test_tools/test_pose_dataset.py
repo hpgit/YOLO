@@ -137,15 +137,16 @@ def test_pose_targets_letterbox_empty_images_and_detection_only_people(tmp_path)
     assert dataset.image_ids == [1, 2]
     image, targets, reverse, path = dataset[0]
     assert image.shape == (3, 20, 20)
-    assert targets.shape == (2, 56)  # crowd skipped; no-keypoint person retained
+    assert targets.shape == (2, 59)  # crowd skipped; no-keypoint person retained
     torch.testing.assert_close(targets[0, :5], torch.tensor([0.0, 6.0, 2.0, 10.0, 10.0]))
-    keypoints = targets[0, 5:].reshape(17, 3)
+    keypoints = targets[0, 5:56].reshape(17, 3)
     torch.testing.assert_close(keypoints[0], torch.tensor([7.0, 4.0, 2.0]))
     torch.testing.assert_close(keypoints[3], torch.zeros(3))  # v=0 coordinates sanitized
-    assert not targets[1, 5:].any()  # box-only person still supervises detection
+    assert not targets[1, 5:56].any()  # box-only person still supervises detection
     torch.testing.assert_close(reverse, torch.tensor([1.0, 1.0, 5.0, 0.0]))
+    torch.testing.assert_close(targets[:, 56:], torch.tensor([[32.0, 1.0, 1.0], [4.0, 1.0, 1.0]]))
     assert Path(path).name == "000000000001.jpg"
-    assert dataset[1][1].shape == (0, 56)  # empty split image is preserved
+    assert dataset[1][1].shape == (0, 59)  # empty split image is preserved
 
 
 def test_pose_horizontal_flip_swaps_coco_left_and_right(tmp_path):
@@ -154,12 +155,12 @@ def test_pose_horizontal_flip_swaps_coco_left_and_right(tmp_path):
     _, targets, _, _ = CocoPoseDataset(data_cfg, dataset_cfg, "train")[0]
 
     torch.testing.assert_close(targets[0, 1:5], torch.tensor([10.0, 2.0, 14.0, 10.0]))
-    keypoints = targets[0, 5:].reshape(17, 3)
+    keypoints = targets[0, 5:56].reshape(17, 3)
     torch.testing.assert_close(keypoints[0], torch.tensor([13.0, 4.0, 2.0]))
     # Reflect first, then swap semantic left/right indices.
     torch.testing.assert_close(keypoints[1], torch.tensor([8.0, 6.0, 1.0]))
     torch.testing.assert_close(keypoints[2], torch.tensor([14.0, 5.0, 2.0]))
-    assert not targets[1, 5:].any()
+    assert not targets[1, 5:56].any()
 
 
 def test_pose_collate_and_loader_keep_standard_batch_contract(tmp_path):
@@ -169,7 +170,7 @@ def test_pose_collate_and_loader_keep_standard_batch_contract(tmp_path):
     batch = pose_collate_fn([dataset[0], dataset[1]])
     assert batch[0] == 2
     assert batch[1].shape == (2, 3, 20, 20)
-    assert batch[2].shape == (2, 2, 56)
+    assert batch[2].shape == (2, 2, 59)
     assert torch.all(batch[2][1, :, 0] == -1)
     assert batch[3].shape == (2, 4)
     assert len(batch[4]) == 2
@@ -188,7 +189,7 @@ def test_fraction_samples_all_image_ids_deterministically_and_records_manifest(t
 
     assert first.image_ids == second.image_ids
     assert len(first) == 1
-    assert first.records[0]["targets"].shape == (0, 56)
+    assert first.records[0]["targets"].shape == (0, 59)
     assert first.manifest["total_images"] == 20
     assert first.manifest["selected_images"] == 1
     assert len(first.manifest["image_ids_sha256"]) == 64
@@ -203,13 +204,18 @@ def test_zero_area_coco_annotation_is_skipped_without_dropping_image(tmp_path):
     dataset = CocoPoseDataset(data_cfg, dataset_cfg, "train")
 
     assert len(dataset) == 2
-    assert dataset.records[0]["targets"].shape == (1, 56)
+    assert dataset.records[0]["targets"].shape == (1, 59)
     assert dataset.manifest["skipped_zero_area_annotations"] == 1
 
 
 @pytest.mark.parametrize(
     "update, match",
     [
+        ({"area": None}, "area"),
+        ({"area": 0}, "area"),
+        ({"area": -2}, "area"),
+        ({"area": float("inf")}, "area"),
+        ({"area": True}, "area"),
         ({"bbox": [1, 2, float("nan"), 8]}, "non-finite"),
         ({"bbox": [8, 2, 4, 8]}, "outside"),
         ({"keypoints": make_keypoints((0, 11, 4, 2)), "num_keypoints": 1}, "outside"),
